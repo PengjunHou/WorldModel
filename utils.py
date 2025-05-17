@@ -13,6 +13,8 @@ PARSER.add('--ctrl_model', required = True, type = str, help = 'controller model
 
 PARSER.add('--latent_dim', required = True, type = int, help = 'embedding latent model')
 
+PARSER.add('--obs_dim', required = False, type = int, help = 'observation dimension')
+PARSER.add('--action_dim', required = False, type = int, help = 'action dimension')
 
 def load_module(module_dict, module_str, module_type_str):
     '''

@@ -1,4 +1,5 @@
 from utils import PARSER
+import env
 from env import make_env
 
 import matplotlib.pyplot as plt
