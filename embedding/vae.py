@@ -2,6 +2,7 @@
 
 import numpy as np
 import os
+import math
 
 import torch
 import torch.nn as nn
@@ -10,39 +11,84 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
+from pythae.models import AutoModel
+from pythae.models.base.base_utils import ModelOutput
+from VAE.utils import imshow_tensor
 
 
+class VAE:
+    def __init__(self, model_root_dir, visualize = False):
+        self.model_root_dir = model_root_dir
+        self.visualize = visualize
+        self.type = ["img", "pcd", "arr"]
+        self.models = {"img": self.load_model("img"), \
+                       "pcd": self.load_model("pcd"), \
+                        "arr": self.load_model("arr")}
 
-class VAE(nn.Module):
-    def __init__(self, args):
-        super(VAE, self).__init__()
-        self.fc1 = nn.Linear(28*28, 400)
-        self.fc_mu = nn.Linear(400, args.latent_dim)
-        self.fc_logvar = nn.Linear(400, args.latent_dim)
+    def load_model(self, model_type):
+        assert model_type in self.type, f"unsupported model type {model_type}"
+        models = {}
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        type_file = model_type + "_model"
+        model_path = os.path.join(self.model_root_dir, type_file)
+        model = AutoModel.load_from_folder(model_path).to(device)
+        models["model_name"] = model.model_name
+        models["model"] = model
+        models["encoder"] = model.encoder
+        models["decoder"] = model.decoder
+        
+        return models
+        
 
-        self.fc_decode = nn.Linear(args.latent_dim, 400)
-        self.fc_out = nn.Linear(400, 28*28)
+    def reconstruct(self, dataset, type, visul_num = 5):
+        assert type in self.type, f"unsupported model type {type}"
+        model = self.models[type]["model"]
+        print(f"dataset shape {dataset.shape}")
 
-    def encode(self, x):
-        h = F.relu(self.fc1(x))
-        mu = self.fc_mu(h)
-        logvar = self.fc_logvar(h)
-        return mu, logvar
+        length = len(dataset) 
+        col = visul_num # math.ceil(length / 5.0)
+        row = 2
+        rescontructions = model.reconstruct(dataset[:length]).detach().cpu()
 
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
+        if self.visualize:
+            fig, axes = plt.subplots(nrows=row, ncols=col, figsize=(15, 6))
+            for i in range(visul_num):
+                if i >= length:
+                    break
+                imshow_tensor(axes[0][i], rescontructions[i])
+                imshow_tensor(axes[1][i], dataset[i])
+            
+            fig.suptitle("Reconstructions VS Orignal", fontsize=16)
+            plt.tight_layout(rect=[0, 0, 1, 0.95]) 
+            plt.show()
+        
+        return rescontructions
+    
+    def embedding(self, inputs: torch.Tensor, type):
+        assert type in self.type, f"unsupported model type {type}"
+        model = self.models[type]["model"]
 
-    def decode(self, z):
-        h = F.relu(self.fc_decode(z))
-        out = torch.sigmoid(self.fc_out(h))
+        outputs = model.embed(inputs)    # inputs: [Batch * input_dim]  # self.encoder(inputs).embedding
+        return outputs                   # outputs: [Batch * latent_dim]
+
+
+    def decode(self, z, type):
+        assert type in self.type, f"unsupported model type {type}"
+        model = self.models[type]["model"]
+        out = model.decoder(z)["reconstruction"]
         return out
+    
+    def predict(self, inputs : torch.Tensor) -> ModelOutput:
+        """
+        output = ModelOutput(
+            recon_x=recon_x,
+            embedding=z,
+        )
+        """
+        assert type in self.type, f"unsupported model type {type}"
+        model = self.models[type]["model"]
 
-    def forward(self, x):
-        mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
-        x_recon = self.decode(z)
-        return x_recon, mu, logvar
+        output : ModelOutput = model.predict(inputs)
+        return output
 
 

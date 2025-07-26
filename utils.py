@@ -1,11 +1,17 @@
 import configargparse
 import importlib
+import logging
 
-PARSER = configargparse.ArgParser(default_config_files=['config/CarRacing.config'])
+LOG = logging.getLogger(__name__)
+DEFAULT_LOG_LEVEL = logging.ERROR
+
+PARSER = configargparse.ArgParser(default_config_files=['config/CarlaVehSensors.config'])
 
 PARSER.add('-c', '--config_path', required = False, is_config_file = True, help = 'config file path')
 PARSER.add('--env_name', required = True, help = 'environment name')
+PARSER.add('--data_path', required = True, type = str, help = 'dataset path')
 PARSER.add('--seed', type = int, help = 'seed')
+PARSER.add('--n_clusters', type = int, help = 'number of clusters')
 
 PARSER.add('--em_model', required = True, type = str, help = 'embedding model')
 PARSER.add('--pred_model', required = True, type = str, help = 'predictive model')
@@ -13,8 +19,44 @@ PARSER.add('--ctrl_model', required = True, type = str, help = 'controller model
 
 PARSER.add('--latent_dim', required = True, type = int, help = 'embedding latent model')
 
+PARSER.add('--time_steps', required = True, type = int, help = 'number of time steps')
 PARSER.add('--obs_dim', required = False, type = int, help = 'observation dimension')
 PARSER.add('--action_dim', required = False, type = int, help = 'action dimension')
+
+def init_log(level_str):
+    ## --------------- 日志的处理 -------------------
+    # remove old log handlers (otherwise sequential simulations only log to first simulation)
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    # start new log file
+
+    logging.VERBOSE = 5
+    logging.addLevelName(logging.VERBOSE, "VERBOSE")
+    logging.Logger.verbose = lambda inst, msg, *args, **kwargs: inst.log(logging.VERBOSE, msg, *args, **kwargs)
+    logging.LoggerAdapter.verbose = lambda inst, msg, *args, **kwargs: inst.log(logging.VERBOSE, msg, *args, **kwargs)
+    logging.verbose = lambda msg, *args, **kwargs: logging.log(logging.VERBOSE, msg, *args, **kwargs)
+
+    if level_str == "verbose":
+        log_level = logging.VERBOSE
+    elif level_str == "debug":
+        log_level = logging.DEBUG
+    elif level_str == "info":
+        log_level = logging.INFO
+    elif level_str == "warning":
+        log_level = logging.WARNING
+    else:
+        log_level = DEFAULT_LOG_LEVEL
+
+    log_file = "output.log"
+    if log_level < logging.INFO:
+        streams = [logging.FileHandler(log_file, mode='w'), logging.StreamHandler()]
+    else:
+        print("Only minimum output to console -> see log-file")
+        streams = [logging.FileHandler(log_file)]
+    ## 这里加上日志的信息和对应的代码行数，输出格式：日期-时间-文件名：行数：日志信息
+    logging.basicConfig(handlers=streams,
+                        level=log_level, format='%(asctime)s %(name)40s:%(lineno)4d [%(levelname)6s]: %(message)s')
+
 
 def load_module(module_dict, module_str, module_type_str):
     '''

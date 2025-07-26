@@ -1,99 +1,95 @@
-from WorldModel.envs.CarlaVehEnv.Sensor import Lidar, Camera
+from envs.CarlaVehEnv.Sensor import Lidar, Camera
+from envs.CarlaVehEnv.CarlaDataCollector import V2XSimReader
+from envs.CarlaVehEnv.Visualize import visualize_step
+import numpy as np
+import logging
+LOG = logging.getLogger(__name__)
 
 class Car():
-    def __init__(self, vid, sensors = None, carla_vehicle = None):
+    def __init__(self, vid, dataset, sensors = None, carla_vehicle = None, visualize = True):
         self.carla_vehicle = carla_vehicle
+        self.visualize = visualize          # 可视化的数据
+        self.dataset : V2XSimReader = dataset
         self.cluster_id = -1
         self.vid = vid
-        self.time_step = -1
-        self.speed = 0
-        self.position = (0, 0, 0)
-        self.rotation = (0, 0, 0)
-        self.sensors = {}
-        self.sensors_data = {}
+        self.sensor_types = sensors 
+        self.sensors = {}               # a dict of sensor objects (sensor_id: sensor)
+        self.setup()
+        self.upload_data = None         # 根据action决定上传的数据，可能是metadata + sensor data 后的数据
+        self.rev_data = None            # 接收的数据
         
-        self.setup(sensors)
     
-    def setup(self, sensors):
-        '''
-        Setup the sensors for the vehicle
-        sensors: a dict of sensor objects (sensor_type: n_sensors)
-        default: Camera: 6, Lidar: 2
-        '''
-        assert isinstance(sensors, dict), "sensors should be a dictionary"
+    def setup(self):
         sensor_id = 0
-        for sensor_type, n_sensors in sensors.items():
-            assert sensor_type in ['Lidar', 'Camera'], "Unknown sensor type"
-            if sensor_type == 'Lidar':
-                for i in range(n_sensors):
-                    sensor_id += 1
-                    sensor = Lidar(sensor_id = sensor_id, type_id = i)
-                    sensor.set_position((0, 0, 0))
-                    sensor.set_angle((0, 0, 0))
-                    sensor.data_path = None
-                    self.sensors[sensor.sensor_id] = sensor
-            elif sensor_type == 'Camera':
-                for i in range(n_sensors):
-                    sensor_id += 1
-                    sensor = Camera(sensor_id = sensor_id, type_id = i)
-                    self.sensors[sensor.sensor_id] = sensor
+        for type, sensors in self.sensor_types.items():
+            for type_id in range(sensors['count']):
+                self.sensors[sensor_id] = {"type": type, "type_id": type_id, "token":sensors['sensors'][type_id]}
+                sensor_id += 1
+        
+        if self.visualize:
+            import matplotlib.pyplot as plt
+
+            # 创建并复用窗口
+            self.fig, self.axs = plt.subplots(4, 6, figsize=(15, 10))
+
+
+
+    def apply_control_upload(self, time_step, action):
+        # Apply control to the vehicle based on the action,action is a numpy array composed of 0 or 1
+        # indicate whether to upload the data or not
+        LOG.debug(f"time step {time_step}, vid {self.vid}, cluster {self.cluster_id}, actions {action}")
+        metadata = self.update_metadata(time_step)
+
+        self.sensors_data = {}
+        for sensor_id, sensor in self.sensors.items():
+            if action[sensor_id] > 0:
+                # Upload the data from the sensor
+                data = self.get_sensor_data(sensor_id, time_step)   
+                self.sensors_data[sensor_id] = data
             else:
-                raise ValueError(f"Unknown sensor type: {sensor_type}")
+                # 用之前的数据后者收到的
+                self.sensors_data[sensor_id] = None
 
-    # 从数据集中提取数据
-    def get_speed(self, time_step):
-        '''
-        TODO: get speed from the carla vehicle or sensor or  file
-        Get the speed of the vehicle
-        '''
-        return self.speed
+        if self.visualize:
+            imgs = []
+            for sensor_id, sensor_data in self.sensors_data.items():
+                if sensor_data is not None:
+                    img, format = sensor_data['filename'], sensor_data['fileformat']
+                    imgs.append(img)
+                else:
+                    imgs.append(None)
 
-    def get_position(self, time_step):
-        '''
-        TODO: get position from the carla vehicle or sensor or  file
-        Get the position of the vehicle
-        '''
-        return self.position
+                visualize_step(time_step, imgs, self.dataset.root, self.fig, self.axs)
+
+    def update_metadata(self, time_step):
+        # Update the metadata of the vehicle
+        metadata = self.dataset.get_vehicle_metadata(self.vid)
+        if time_step == 0:
+            time_step += 1
+        self.speed = metadata[time_step]['velocity']
+        self.position = metadata[time_step]['position']
+        self.rotation = metadata[time_step]['rotation']
+
+        return metadata[time_step]
     
+    def get_sensor_data(self, sensor_id, time_step):
+        # Return the data from a specific sensor
+        sensor_token = self.sensors[sensor_id]['token']
+        data = self.dataset.get_agent_sensor_files(self.vid, time_step)
+        assert sensor_token in data, f"Sensor {sensor_token} not found in data"
 
-    def get_rotation(self, time_step):
-        '''
-        TODO: get rotation from the carla vehicle or sensor or  file
-        Get the rotation of the vehicle
-        '''
-        return self.rotation
-    
+        return data[sensor_token]
 
-    def get_state(self):
+    def get_state(self, time_step):
         '''
         TODO: What dose the state of the vehicle comprise of?
         Get the state of the vehicle
         '''
-        metadata = {
-            'vid': self.vid,
-            'cluster_id': self.cluster_id,
-            'position': self.position,
-            'rotation': self.rotation,
-            'speed': self.speed
-        }
-
-        # Get the state of the sensors
-        sensor_states = {}
-        for sensor_id, sensor in self.sensors.items():
-            sensor_states[sensor_id] = sensor.get_state()
-        
-        # Combine the metadata and sensor states
-        state = self.combine_states(metadata, sensor_states)    # TODO: apply RNN to the state
+        # state = self.combine_states()    # TODO: apply RNN to the state
+        state = None
         return state
 
     
-    def get_sensor_data(self, sensor_type, type_id):
-        # Return the data from a specific sensor
-        sensor = self.get_sensor(sensor_type, type_id)
-        if sensor:
-            return sensor.get_data()
-        else:
-            raise ValueError(f"Sensor {type_id} of type {sensor_type} not found")
     
     def join_group(self, cluster_id):
         # Join a group of vehicles
@@ -103,34 +99,8 @@ class Car():
         # Leave the current group of vehicles
         self.cluster_id = None
 
-    
-    def get_sensor(self, sensor_type, sensor_id):
-        # Return a dictionary of the car's sensors
-        # This could include cameras, LIDAR, etc.
-        pass
 
-    def update_metadata(self, time_step):
-        # Update the metadata of the vehicle
-        assert time_step > self.time_step, "time_step should be greater than the previous time_step"
-        self.time_step = time_step
-        self.speed = self.get_speed(time_step)
-        self.position = self.get_position(time_step)
-        self.rotation = self.get_rotation(time_step)
-
-
-    def apply_control_upload(self, time_step, action):
-        # Apply control to the vehicle based on the action,action is a numpy array composed of 0 or 1
-        # indicate whether to upload the data or not
-        self.update_metadata(time_step)
-
-        for sensor_id, sensor in self.sensors.items():
-            if action[sensor_id] == 1:
-                # Upload the data from the sensor
-                data = sensor.get_data(time_step)   # TODO: also get the feature of the data
-                self.sensors_data[sensor_id] = data
-
-
-    def receive_data(self, state):
+    def receive_data(self, data, time_step):
         pass
     
 class CarLeader(Car):
@@ -157,19 +127,21 @@ class CarLeader(Car):
         pass
 
 class Clusters():
-    def __init__(self, cluster_id):
+    def __init__(self, cluster_id, leader_id, vehicles):
         self.cluster_id = cluster_id
-        self.members : list[Car] = []
-        self.leader = None
+        self.members : dict[Car] = vehicles # vid -> Car
+        assert leader_id in range(len(vehicles)), "Leader ID is not in the cluster"
+        self.leader = vehicles[leader_id]
+        LOG.debug(f"members: f{self.members}")
 
-    def add_member(self, member):
-        self.members.append(member)
+    # def add_member(self, member):
+    #     self.members.append(member)
 
-    def remove_member(self, member):
-        if member in self.members:
-            self.members.remove(member)
-        else:
-            raise ValueError("Member not found in the cluster")
+    # def remove_member(self, member):
+    #     if member in self.members:
+    #         self.members.remove(member)
+    #     else:
+    #         raise ValueError("Member not found in the cluster")
     
     def get_members(self):
         return self.members
@@ -181,14 +153,15 @@ class Clusters():
     def get_leader(self):
         return self.leader
     
-    def get_state(self, time_step, action):
+    def get_state(self, time_step):
         # Return the state of the cluster
         cluster_state = {}
-        for member in self.members:
-            member_state = member.get_state()
+
+        for vid, member in self.members.items():
+            member_state = member.get_state(time_step)
             cluster_state[member.vid] = member_state
         
-        states = None
+        states = cluster_state
         # states = GNN(cluster_state)     # TODO
         return states
     
@@ -199,7 +172,7 @@ class Clusters():
     
     def step(self, time_step, action):
         # Update the state of the cluster and its members
-        for member in self.members:
+        for vid, member in self.members.items():
             member.apply_control_upload(time_step, action[member.vid])
             
     

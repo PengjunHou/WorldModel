@@ -24,7 +24,7 @@ def make_env(args, dream_env=False, seed=-1, render_mode=False, full_episode=Fal
         if dream_env:
             raise ValueError('training in dreams for carracing is not yet supported')
         else:
-            print('makeing real CarRacing environment')
+            print('makeing real CarlaVehSensors environment')
         env = CarlaEnv(config=args, full_episode=full_episode, with_obs=with_obs, load_model=load_model)
     if (seed >= 0):
         env.seed(seed)
