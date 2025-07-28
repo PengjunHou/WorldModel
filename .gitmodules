@@ -1,0 +1,3 @@
+[submodule "external/coperception"]
+	path = external/coperception
+	url = https://github.com/coperception/coperception.git
