@@ -1,20 +1,15 @@
 import os
 import json
+import math
 from collections import defaultdict
+from nuscenes.utils.geometry_utils import transform_matrix
 from typing import List, Dict, Any, Optional
 import numpy as np
+from pyquaternion import Quaternion
+from nuscenes.nuscenes import NuScenes as V2XSimDataset
 
 import logging
 LOG = logging.getLogger(__name__)
-
-def quat_to_rot_matrix(q):
-    """四元数转 3×3 旋转矩阵，q=[qw, qx, qy, qz]"""
-    qw, qx, qy, qz = q
-    return np.array([
-        [1 - 2*(qy*qy + qz*qz),   2*(qx*qy - qz*qw),   2*(qx*qz + qy*qw)],
-        [2*(qx*qy + qz*qw),       1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qx*qw)],
-        [2*(qx*qz - qy*qw),       2*(qy*qz + qx*qw),   1 - 2*(qx*qx + qy*qy)]
-    ])
 
 class V2XSimReader:
     def __init__(self, root_dir: str = r"V2X-Sim-2.0-mini"):
@@ -37,6 +32,7 @@ class V2XSimReader:
         └── maps/                    # 地图文件
             └── <map_token>.bin
         """
+        self.v2x_sim = V2XSimDataset(version='v2.0-mini', dataroot=root_dir, verbose=True)
         self.root        = root_dir
         self.json_dir    = os.path.join(root_dir, 'v2.0-mini')
         self.sweeps_dir  = os.path.join(root_dir, 'sweeps')
@@ -47,8 +43,21 @@ class V2XSimReader:
         def _load(fn):
             path = os.path.join(self.json_dir, fn)
             return json.load(open(path, 'r'))
+        
+        self.scene = self.v2x_sim.scene[0]
+        self.first_sample_token = self.scene.get("first_sample_token")
+        self.last_sample_token = self.scene.get("last_sample_token")
+        self.channels = ['LIDAR_TOP']
+                        # ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT', 'DEP_FRONT']
+                        #  'DEP_FRONT_LEFT', 'DEP_FRONT_RIGHT', 'DEP_BACK', 'DEP_BACK_LEFT', 'DEP_BACK_RIGHT', 'BEV_TOP', 'SEG_FRONT', \
+                        #  'SEG_FRONT_RIGHT', 'SEG_FRONT_LEFT', 'SEG_BACK', 'SEG_BACK_LEFT', 'SEG_BACK_RIGHT', 'LIDAR_TOP', 'SEMLIDAR_TOP', \
+                        #  'IMU_TOP', 'GNSS_TOP']
+        # self.samples       = _load('sample.json')
+        LOG.info(f"Loading V2X-Sim scene: {self.scene} \n \
+                 first sample token {self.first_sample_token} \n \
+                 last sample token {self.last_sample_token}")
+
         self.sample_data   = _load('sample_data.json')
-        self.samples       = _load('sample.json')
         self.annotations   = _load('sample_annotation.json')
         self.sensors       = _load('sensor.json')
         self.ego_poses     = _load('ego_pose.json')
@@ -66,7 +75,9 @@ class V2XSimReader:
         # build lookup tables
         self._build_indices()
 
-        
+        # build global map
+        self.voxel_size = (10, 10, 0.4)  # 体素大小
+        self.area_extents, self.map_dims = self.init_global_map(self.voxel_size)
 
     def _preprocess(self):
         """
@@ -110,21 +121,27 @@ class V2XSimReader:
             key = type['token']
             self._category[key] = type
 
-        # sample lookup: timestamp -> sample
+
         self._idx_sample = {}
-        for sample in self.samples:
+        self._idx_sd = {}
+        sample_token = self.first_sample_token
+        while sample_token != '' and sample_token is not None:
+            # sample lookup: timestamp -> sample
+            sample = self.v2x_sim.get('sample', sample_token)
             key = sample['timestamp']
             self._idx_sample[key] = sample
 
-        # sample_data lookup: (calibrated_sensor_token, timestamp) -> sample_data
-        self._idx_sd = {}
-        for sd in self.sample_data:
-            key_sensor_timestamp = (sd['calibrated_sensor_token'], sd['timestamp'])
-            self._idx_sd[key_sensor_timestamp] = sd
+            # sample_data lookup: (calibrated_sensor_token, timestamp) -> sample_data
+            for vehicle_id in self.vehicle_ids:
+                for channel in self.channels:
+                    if f'{channel}_id_{vehicle_id}' in sample['data']:
+                        # print(f"Found {channel} for vehicle {vehicle_id} in sample {sample_token}")
+                        sample_data = self.v2x_sim.get('sample_data', sample['data'][f'{channel}_id_{vehicle_id}'])
+                        key_sensor_timestamp = (sample_data['calibrated_sensor_token'], sample_data['timestamp'])
+                        self._idx_sd[key_sensor_timestamp] = sample_data
+                        # print(f"Sample data: {sample_data}")
 
-            # key_sample_token = (sd['calibrated_sensor_token'], sd['sample_token'])
-            # key = (sd['calibrated_sensor_token'], sd['sample_token'])
-            # self._idx_sd[key] = sd
+            sample_token = sample['next']
 
         # sensor channel lookup : sensor_token -> channel
         self._idx_channel = {}
@@ -175,7 +192,7 @@ class V2XSimReader:
         for s in self.sensors:
             channel = s['channel']
             parts = channel.split('_id_')
-            if len(parts) > 1:
+            if len(parts) > 1 and parts[0] in self.channels:
                 modality = s.get('modality', 'unknown')
                 token = s['token']
                 id = int(parts[1].split('_')[0])
@@ -229,7 +246,7 @@ class V2XSimReader:
                 calibrated_sensor_token = self.sensor_to_calibrated_sensor.get(sensor_token)
                 timestamp = self.start_timestamp + time_step
                 sample_data = self._idx_sd.get((calibrated_sensor_token, timestamp))
-                assert sample_data is not None, f"Sample data not found for {sensor_token} at {time_step}"
+                assert sample_data is not None, f"Sample data not found for {sensor_token} at {time_step}, calibrated_sensor_token: {calibrated_sensor_token}, timestamp: {timestamp}"
 
                 data[sensor_token] = sample_data
         
@@ -366,7 +383,7 @@ class V2XSimReader:
          
     def get_object_data(self, object_token: str):
         """
-        返回对象的包括对象的传感器数据。
+        返回对象(instance)的包括对象的传感器数据。
         """
         instance_obj = self._instances.get(object_token)
         first_annotation_token = instance_obj['first_annotation_token']
@@ -439,26 +456,153 @@ class V2XSimReader:
         """
         return self.timestamp_length
 
+
+    def get_cord_range(self, translation, rotation, size):
+        length, width, height = size    # 这里有可能是width, length, height = size  # nuScenes: size = [w, l, h]
+        corners_local = np.array([
+            [ length/2,  width/2,  height/2],
+            [ length/2, -width/2,  height/2],
+            [-length/2, -width/2,  height/2],
+            [-length/2,  width/2,  height/2],
+            [ length/2,  width/2, -height/2],
+            [ length/2, -width/2, -height/2],
+            [-length/2, -width/2, -height/2],
+            [-length/2,  width/2, -height/2],
+        ])
+        R = Quaternion(rotation).rotation_matrix
+        center = np.array(translation)
+        world_corners = (R @ corners_local.T).T + center
+        min_xyz = world_corners.min(axis=0)
+        max_xyz = world_corners.max(axis=0)
+
+        return min_xyz, max_xyz
+
+    def init_global_map(self, voxel_size=(0.25, 0.25, 0.4)):
+        """
+        初始化全局地图，设置地图的尺寸和分辨率。
+        returns: area_extents, voxel_size
+        self.voxel_size = (0.25, 0.25, 0.4)
+        self.area_extents = np.array([[-96.0, 96.0], [-96.0, 96.0], [-4.0, 4.0]])
+        """
+        area_extents = np.array([[np.inf, -np.inf], [np.inf, -np.inf], [np.inf, -np.inf]])
+        sample_token = self.first_sample_token
+        while sample_token != '' and sample_token is not None:
+            sample = self.v2x_sim.get("sample", sample_token)
+            next_sample_token = sample.get('next')
+            # print(f"Processing sample: {sample.keys()}")
+            if sample is None:
+                continue
+            for ann_token in sample['anns']:
+                ann = self.v2x_sim.get("sample_annotation", ann_token)
+                if ann is None:
+                    continue
+                translation = ann['translation']
+                rotation = ann['rotation']
+                size = ann['size']
+                min_xyz, max_xyz = self.get_cord_range(translation, rotation, size)
+                # print(f"Annotation {ann_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
+
+                area_extents[:, 0] = np.minimum(area_extents[:, 0], min_xyz)
+                area_extents[:, 1] = np.maximum(area_extents[:, 1], max_xyz)
+            
+            for sample_data_token in sample['data'].values():
+                sample_data = self.v2x_sim.get("sample_data", sample_data_token)
+                if sample_data is None:
+                    continue
+
+                ego_pose_token = sample_data['ego_pose_token']
+                ego_pose = self.v2x_sim.get("ego_pose", ego_pose_token)
+                ego_rotation = ego_pose['rotation']
+                ego_translation = ego_pose['translation']
+                min_xyz, max_xyz = self.get_cord_range(ego_translation, ego_rotation, [0.1, 0.1, 0.1])
+                # print(f"Calibrated sensor {calibrated_sensor_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
+
+                area_extents[:, 0] = np.minimum(area_extents[:, 0], min_xyz)
+                area_extents[:, 1] = np.maximum(area_extents[:, 1], max_xyz)
+
+            # print(f"Current area extents: {area_extents}")
+                
+            sample_token = next_sample_token
+
+        print(f"Global map area extents: {area_extents}")
+        print(f"Global map voxel size: {voxel_size}")
+        area_extents[:,0] = (np.floor(area_extents[:,0] / voxel_size)) * voxel_size
+        area_extents[:,1] = (np.ceil(area_extents[:,1] / voxel_size)) * voxel_size
+        print(f"Adjusted area extents: {area_extents}")
+
+        map_dims = np.ceil((area_extents[:, 1] - area_extents[:, 0]) / voxel_size)
+        map_dims = map_dims.astype(int)
+        print(f"Global map dimensions: {map_dims}")
+        
+        
+        return area_extents, map_dims
+    
+    def boxes_to_conf_map(self, conf_map, boxes_world, scores, agg="max"):
+        """
+        将世界坐标系下的边界框转换为置信度地图。
+        boxes_world: (N, 1, 4, 2) 或 (N, 4, 2) 世界系四角点（xy）
+        scores: (N,) 每个框的分数
+        area_extents: [[xmin,xmax],[ymin,ymax],[zmin,zmax]]
+        voxel_size: (vx, vy, vz)
+        agg: 'max' 或 'sum'
+        returns: conf_map (Ny, Nx)
+        """
+        map_xmin, map_xmax = self.area_extents[0]
+        map_ymin, map_ymax = self.area_extents[1]
+        # LOG.info(f"conf map area: [{map_xmin}, {map_xmax}], [{map_ymin}, {map_ymax}]")
+        # LOG.info(f"conf map size: {conf_map.shape}, {conf_map}")
+        for k in range(boxes_world.shape[0]):
+            corners = boxes_world[k][0] 
+            x_min = np.maximum(np.min(corners[:, 0]), map_xmin)
+            x_max = np.minimum(np.max(corners[:, 0]), map_xmax)
+            y_min = np.maximum(np.min(corners[:, 1]), map_ymin)
+            y_max = np.minimum(np.max(corners[:, 1]), map_ymax)
+
+            x_index_min = int(np.floor((x_min - map_xmin) / self.voxel_size[0]))
+            x_index_max = int(np.floor((x_max - map_xmin) / self.voxel_size[0]))
+            y_index_min = int(np.floor((y_min - map_ymin) / self.voxel_size[1]))
+            y_index_max = int(np.floor((y_max - map_ymin) / self.voxel_size[1]))
+
+            # LOG.info(f"Object corners: {corners}, x_min: {x_min}, x_max: {x_max}, y_min: {y_min}, y_max: {y_max}")
+            # LOG.info(f"Indices: x_index_min: {x_index_min}, x_index_max: {x_index_max}, y_index_min: {y_index_min}, y_index_max: {y_index_max}")
+            # LOG.info(f"Scores: {scores[k]}, conf_map shape: {conf_map.shape}, conf_map: {conf_map}")
+            # 遍历这个索引，然后将scores加到conf_map上
+            for i in range(x_index_min, x_index_max + 1):
+                for j in range(y_index_min, y_index_max + 1):
+                    if agg == "max":
+                        conf_map[i, j] = max(conf_map[i, j], scores[k])
+                    elif agg == "sum":
+                        conf_map[i, j] += scores[k]
+                    else:
+                        raise ValueError(f"Unknown aggregation method: {agg}")
+            # LOG.info(f"dtype: {conf_map.dtype}")
+            # LOG.info(f"nonzero: {np.count_nonzero(conf_map)}")
+            # LOG.info(f"min/max: {float(conf_map.min())}, {float(conf_map.max())}")
+            
+        return conf_map
+
 # ----------------------------
 # 示例用法
 # ----------------------------
 if __name__ == "__main__":
-    root = "/home/peh324/Codes/V2X-Sim-2.0-mini/V2X_sim_2_mini"
+    root = "D:\\Code\\coperception\\data\\v2x_sim_dataset"
     reader = V2XSimReader(root)
 
     sample_token = "q68g8v6474j101675mphs2r8w97575ca"
     agent_token  = "qd2333299cth40oy7mx16ejzcn02c345"
 
-    reader.get_agent_sensor_files(0, 0)
-    reader.get_agent_sensor_files(0, 99)
+    # reader.get_agent_sensor_files(0, 0)
+    # reader.get_agent_sensor_files(0, 99)
 
-    reader.get_agent_sensor_files(1, 0)
-    reader.get_agent_sensor_files(1, 99)
+    # reader.get_agent_sensor_files(1, 0)
+    # reader.get_agent_sensor_files(1, 99)
 
-    reader.get_agent_sensor_files(5, 0)
-    reader.get_agent_sensor_files(5, 99)
+    # reader.get_agent_sensor_files(5, 0)
+    # reader.get_agent_sensor_files(5, 99)
 
-    reader.get_vehicle_metadata(4)
+    # reader.get_vehicle_metadata(4)
+
+
 
     # reader.get_object_data('rzu6onez5wun9318opx587yi8q8di1gt')
 

@@ -8,10 +8,17 @@ DEFAULT_LOG_LEVEL = logging.ERROR
 PARSER = configargparse.ArgParser(default_config_files=['config/CarlaVehSensors.config'])
 
 PARSER.add('-c', '--config_path', required = False, is_config_file = True, help = 'config file path')
+PARSER.add('-v', '--v2x_data_path', required = False, is_config_file = True, help = 'V2X config file path')
+PARSER.add('--num_vehicles', type = int, default = 5, help = 'number of vehicles')
 PARSER.add('--env_name', required = True, help = 'environment name')
 PARSER.add('--data_path', required = True, type = str, help = 'dataset path')
 PARSER.add('--seed', type = int, help = 'seed')
 PARSER.add('--n_clusters', type = int, help = 'number of clusters')
+
+PARSER.add('--time_slice_unit', type = float, default = 0.001, help = 'time slice unit')
+PARSER.add('--summary_slices', type = int, default = 10, help = 'number of summary slices')
+PARSER.add('--feature_slices', type = int, default = 1, help = 'number of feature slices')
+PARSER.add('--process_slices', type = int, default = 20, help = 'number of process slices')
 
 PARSER.add('--em_model', required = True, type = str, help = 'embedding model')
 PARSER.add('--pred_model', required = True, type = str, help = 'predictive model')

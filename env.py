@@ -1,7 +1,7 @@
 import numpy as np
 import random
 # from envs.DoomTakeCover import DoomTakeCoverEnv
-from envs.CarRacing import CarRacingEnv
+# from envs.CarRacing import CarRacingEnv
 from envs.CarlaVehSensors import CarlaEnv
 # from envs.DreamDoomTakeCover import DreamDoomTakeCoverEnv
 

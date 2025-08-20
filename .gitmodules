@@ -1,3 +1,7 @@
 [submodule "external/coperception"]
 	path = external/coperception
-	url = https://github.com/coperception/coperception.git
+	url = https://github.com/PengjunHou/coperception.git
+	branch = coperception
+[submodule "external/OpenPCDet"]
+	path = external/OpenPCDet
+	url = https://github.com/open-mmlab/OpenPCDet.git

@@ -30,7 +30,7 @@
 - `resource_alloc()`: allocate resource to members of the cluster
 - `data_fusion()`: perform multi-source fusion of sensor data and member states, producing a global perception result
 - `collect_feedback()`: collect feedback of members
-- `control(action)`: override `apply_control_upload` to command the leader vehicle itself
+- `control(action)`: override `apply_control_broadcast` to command the leader vehicle itself
 
 ### Cluster
 
@@ -61,7 +61,7 @@
    - Upon receiving fused data, each vehicle constructs input comprising its predicted state and cluster graph.
    - A GNN encoder extracts graph-level features, and an RNN/Transformer predicts its future state.
    - The RL policy (`HybridPolicy`) uses these features to output upload/control actions.
-   - Vehicles execute `apply_control_upload(action)` to carry out the RL decisions.
+   - Vehicles execute `apply_control_broadcast(action)` to carry out the RL decisions.
 
 ## Algorithm Outline
 
@@ -97,7 +97,7 @@ for each time step t do
 
   # 6. Execute actions
   for each (car, action) in zip(all_cars, actions) do
-    car.apply_control_upload(action)
+    car.apply_control_broadcast(action)
   end for
 end for
 ```
