@@ -52,63 +52,6 @@ def init_detection_model(config, num_agent, com="lowerbound", ckpt_path=None, de
 
 import torch
 
-@torch.no_grad()
-def run_detection(fafmodule, device, config, 
-                  padded_voxel_points, reg_target, reg_loss_mask,
-                  anchors_map, vis_maps, trans_matrix,
-                  target_agent_id, num_agent, flag="lowerbound"):
-    """
-    对单个 agent 的点云 BEV 输入进行目标检测，输出 scores & boxes
-    参考 test_codet.py 的推理流程
-    """    # 构造 data，与 test_codet.py 保持一致
-    data = {
-        "bev_seq": padded_voxel_points.unsqueeze(0).to(device),
-        "labels": torch.zeros_like(reg_target).unsqueeze(0).to(device),  # dummy
-        "reg_targets": reg_target.unsqueeze(0).to(device),
-        "anchors": anchors_map.unsqueeze(0).to(device),
-        "vis_maps": vis_maps.unsqueeze(0).to(device),
-        "reg_loss_mask": reg_loss_mask.unsqueeze(0).to(device).type(dtype=torch.bool),
-        "target_agent_ids": torch.tensor([[target_agent_id]]).to(device),
-        "num_agent": torch.tensor([[num_agent]]).to(device),
-        "trans_matrices": trans_matrix.unsqueeze(0).to(device),
-    }
-
-    # # 调用推理
-    # if flag == "lowerbound_box_com":
-    #     loss, cls_loss, loc_loss, result = fafmodule.predict_all_with_box_com(
-    #         data, data["trans_matrices"], validation=False
-    #     )
-    # else:
-    #     result = fafmodule.predict_all(
-    #         data, 1, validation=False, num_agent = 1
-    #     )
-
-    # LOG.info(f"Detection result for agent {target_agent_id}: {result}")
-    # # 解析结果
-    # scores, boxes = [], []
-
-    # if isinstance(result, list) and len(result) > 0:
-    #     # result[0] 是一个 tuple (detections, some_tensor)
-    #     detections, _ = result[0]
-
-    #     if isinstance(detections, list) and len(detections) > 0:
-    #         agent_detections = detections[0]  # [[{...}]]
-    #         if len(agent_detections) > 0:
-    #             pred_dict = agent_detections[0]  # {'pred': ..., 'score': ..., ...}
-
-    #             if "score" in pred_dict and "pred" in pred_dict:
-    #                 scores = pred_dict["score"]
-    #                 if torch.is_tensor(scores):
-    #                     scores = scores.detach().cpu().numpy()
-    #                 boxes = pred_dict["pred"]
-    #                 if torch.is_tensor(boxes):
-    #                     boxes = boxes.detach().cpu().numpy()
-
-    scores = np.random.rand(10)  # 10个检测框的置信度
-    boxes = np.random.rand(10, 4) * 30  # 10个检测框的(x, y, w, h)，范围在0-10米之间
-
-
-    return scores, boxes
 
 
 
@@ -347,4 +290,204 @@ def _compose_T_world_sensor(nusc, sample_data):
     return T_world_ego @ T_ego_sensor, T_world_ego
 
 
+
+import numpy as np
+import torch
+
+def voxel_to_confidence_map(padded_voxel_points,
+                            take_last_t=True,
+                            z_reduce="sum",           # "sum" 或 "max"
+                            smooth_sigma=0.0,         # >0 时用高斯平滑(可选)
+                            norm_mode="percentile",   # "minmax" | "percentile"
+                            p_low=1.0, p_high=99.0):
+    """
+    将 [T,H,W,Z] 或 [H,W,Z] 或 [Z,H,W] 的体素 grid 转为 2D 置信度图 (H,W)，并归一化到 [0,1]。
+    - take_last_t: 当输入是 [T,H,W,Z] 时，取最后一帧 T=-1；否则对 T 求和也可按需修改。
+    - z_reduce: 在 Z 维度上求和("sum")或取最大("max")。
+    - smooth_sigma: 若>0，将对 2D 图高斯平滑(需 scipy)；没有 scipy 就设为 0.
+    - norm_mode:
+        * "minmax": (x - x.min) / (x.max - x.min + 1e-8)
+        * "percentile": 按分位数 [p_low, p_high] 裁剪再线性归一化
+    """
+    voxel = padded_voxel_points
+    if isinstance(voxel, torch.Tensor):
+        voxel = voxel.detach().cpu().numpy()
+
+    # 统一到 [H,W,Z]
+    if voxel.ndim == 4:
+        # 可能是 [T,H,W,Z]
+        T, H, W, Z = voxel.shape
+        if take_last_t:
+            voxel = voxel[-1]  # -> [H,W,Z]
+        else:
+            voxel = voxel.sum(axis=0)  # -> [H,W,Z]
+    elif voxel.ndim == 3:
+        # [H,W,Z] 或 [Z,H,W]：通过判断哪一维像 Z
+        shp = voxel.shape
+        # 如果最后一维比较小/离散(如 13)，认为是 [H,W,Z]
+        if shp[-1] <= 64 and shp[-1] <= min(shp[0], shp[1]):
+            # [H,W,Z]
+            pass
+        else:
+            # 认为是 [Z,H,W]，转成 [H,W,Z]
+            voxel = np.transpose(voxel, (1, 2, 0))
+    else:
+        raise ValueError(f"Unexpected voxel ndim={voxel.ndim}, shape={voxel.shape}")
+
+    # 在 Z 上聚合
+    if z_reduce == "sum":
+        conf = voxel.sum(axis=-1)   # [H,W]
+    elif z_reduce == "max":
+        conf = voxel.max(axis=-1)   # [H,W]
+    else:
+        raise ValueError("z_reduce must be 'sum' or 'max'")
+
+    # 可选：平滑
+    if smooth_sigma and smooth_sigma > 0:
+        try:
+            from scipy.ndimage import gaussian_filter
+            conf = gaussian_filter(conf, sigma=float(smooth_sigma))
+        except Exception:
+            pass  # 没装 scipy 就跳过
+
+    # 归一化到 [0,1]
+    conf = conf.astype(np.float32)
+    if norm_mode == "minmax":
+        mn, mx = float(conf.min()), float(conf.max())
+        if mx > mn:
+            conf = (conf - mn) / (mx - mn + 1e-8)
+        else:
+            conf[:] = 0.0
+    elif norm_mode == "percentile":
+        lo = np.percentile(conf, p_low)
+        hi = np.percentile(conf, p_high)
+        if hi > lo:
+            conf = np.clip((conf - lo) / (hi - lo + 1e-8), 0.0, 1.0)
+        else:
+            conf[:] = 0.0
+    else:
+        raise ValueError("norm_mode must be 'minmax' or 'percentile'")
+
+    return conf  # [H,W], float32 in [0,1]
+
+def heatmap_to_boxes(conf_map,
+                     thresh="percentile",  # "percentile" 或 "value"
+                     thr_value=0.5,        # 当 thresh="value" 时使用
+                     thr_percentile=95.0,  # 当 thresh="percentile" 时使用
+                     min_pixels=10):       # 过滤太小的区域
+    """
+    将置信度图阈值化，做连通域，输出 (N, 4, 2) 的矩形框(像素坐标)和每框分数(平均置信度)。
+    """
+    import numpy as np
+    from scipy.ndimage import label, find_objects
+
+    cm = conf_map
+    if thresh == "percentile":
+        t = float(np.percentile(cm, thr_percentile))
+    elif thresh == "value":
+        t = float(thr_value)
+    else:
+        raise ValueError("thresh must be 'percentile' or 'value'")
+
+    mask = (cm >= t)
+    labeled, n = label(mask)
+    objs = find_objects(labeled)
+
+    boxes = []
+    scores = []
+    for s in objs:
+        if s is None: continue
+        yslice, xslice = s
+        h = yslice.stop - yslice.start
+        w = xslice.stop - xslice.start
+        if h * w < min_pixels:
+            continue
+        y1, y2 = yslice.start, yslice.stop
+        x1, x2 = xslice.start, xslice.stop
+
+        # 矩形四角(像素坐标，左上为(0,0))
+        corners = np.array([
+            [x1, y1],
+            [x2, y1],
+            [x2, y2],
+            [x1, y2],
+        ], dtype=np.float32)
+        boxes.append(corners)
+
+        # 框分数：区域平均置信度
+        scores.append(float(cm[y1:y2, x1:x2].mean()))
+
+    if len(boxes) == 0:
+        return np.zeros((0,4,2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    return np.stack(boxes, axis=0), np.array(scores, dtype=np.float32)
+
+
+def overlay_confidence_maps(maps, alphas=None, title="Overlay of 5 vehicle confidence maps", out_path = None):
+    """
+    Overlay N confidence maps (already aligned in the same global grid)
+    on a single figure using transparency.
+    
+    Args:
+        maps: np.ndarray or list of np.ndarray with shape (N,H,W) or list of (H,W).
+        alphas: list/array of length N with transparency values in (0,1].
+                If None, uses a gentle decreasing sequence.
+        title: plot title string.
+    """
+    # Normalize input to numpy array (N,H,W)
+    if isinstance(maps, list):
+        maps = np.stack(maps, axis=0)
+    assert maps.ndim == 3, f"Expected (N,H,W), got {maps.shape}"
+    N, H, W = maps.shape
+    
+    # Normalize each map to [0,1] to make overlay comparable
+    # maps_norm = np.zeros_like(maps, dtype=np.float32)
+    # for i in range(N):
+    #     m = maps[i].astype(np.float32)
+    #     m_min, m_max = m.min(), m.max()
+    #     if m_max > m_min:
+    #         maps_norm[i] = (m - m_min) / (m_max - m_min)
+    #     else:
+    #         maps_norm[i] = np.zeros_like(m)
+    
+    # Alpha schedule: slightly decreasing so earlier layers are more visible
+    if alphas is None:
+        base, step = 0.7, 0.1
+        alphas = np.clip(base - step * np.arange(N), 0.2, 0.9)
+
+    # Plot
+    plt.figure(figsize=(7, 7))
+    ax = plt.gca()
+    ax.set_title(title)
+    ax.set_xticks([]); ax.set_yticks([])
+    ax.imshow(np.zeros((H, W)), interpolation="nearest", origin="upper")
+
+    for i in range(N):
+        ax.imshow(maps[i], interpolation="nearest", origin="upper", alpha=float(alphas[i]))
+
+    plt.tight_layout()
+    if out_path is None:
+        plt.show()
+    else:
+        plt.savefig(out_path, dpi=150)
+        plt.close()
+        print(f"Saved overlay image to {out_path}")
+
+# # ---- Demo with synthetic data (replace with your actual 5 maps) ----
+# N, H, W = 5, 128, 128
+# rng = np.random.default_rng(0)
+# # Create five smooth-ish maps with different "hot" regions
+# demo_maps = []
+# centers = [(40,40), (90,35), (64,90), (30,100), (100,80)]
+# for cx, cy in centers:
+#     X, Y = np.meshgrid(np.arange(W), np.arange(H))
+#     dist2 = (X - cx)**2 + (Y - cy)**2
+#     blob = np.exp(-dist2 / (2*(15**2))) + 0.15*rng.random((H,W))
+#     demo_maps.append(blob)
+
+# overlay_confidence_maps(demo_maps, title="Demo overlay (replace with your 5 global-aligned maps)")
+
+# # Also save one example image
+# summed = np.sum(np.stack(demo_maps, axis=0), axis=0)
+# summed_norm = summed / np.max(summed)
+# plt.imsave('/mnt/data/overlay_confidence_maps_demo.png', summed_norm)
 

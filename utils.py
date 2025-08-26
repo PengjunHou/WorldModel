@@ -12,6 +12,8 @@ PARSER.add('-v', '--v2x_data_path', required = False, is_config_file = True, hel
 PARSER.add('--num_vehicles', type = int, default = 5, help = 'number of vehicles')
 PARSER.add('--env_name', required = True, help = 'environment name')
 PARSER.add('--data_path', required = True, type = str, help = 'dataset path')
+PARSER.add('--result_path', required = True, type = str, help = 'result path')
+PARSER.add('--visualize', type = int, default = 0, help = 'visualize the environment')
 PARSER.add('--seed', type = int, help = 'seed')
 PARSER.add('--n_clusters', type = int, help = 'number of clusters')
 
@@ -29,6 +31,10 @@ PARSER.add('--latent_dim', required = True, type = int, help = 'embedding latent
 PARSER.add('--time_steps', required = True, type = int, help = 'number of time steps')
 PARSER.add('--obs_dim', required = False, type = int, help = 'observation dimension')
 PARSER.add('--action_dim', required = False, type = int, help = 'action dimension')
+PARSER.add('--epoch', required = True, type = int, default = 100, help = "number of epoch")
+PARSER.add('--model_checkpt', required = True, type = str, help = 'model checkpoint path')
+PARSER.add('--save_model', required = True, type = int, default = 1, help = "enable save RL model")
+PARSER.add('--load_model', required = True, type = int, default = 0, help = "enable load RL model")
 
 def init_log(level_str):
     ## --------------- 日志的处理 -------------------

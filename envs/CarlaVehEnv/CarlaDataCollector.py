@@ -163,6 +163,18 @@ class V2XSimReader:
 
         return tokens
     
+    def get_sample(self, time_step):
+        """
+        返回指定agent在指定时间步的样本数据。
+        agent_id: 0 for RSU, 1 for vehicle
+        time_step: 时间步
+        """
+        timestamp = self.start_timestamp + time_step
+        sample = self._idx_sample.get(timestamp)
+        assert sample is not None, f"Sample not found for timestamp {timestamp}"
+
+        return sample
+    
     def sensors_info(self):
         """
         返回一个 dict:
@@ -567,9 +579,10 @@ class V2XSimReader:
             # LOG.info(f"Indices: x_index_min: {x_index_min}, x_index_max: {x_index_max}, y_index_min: {y_index_min}, y_index_max: {y_index_max}")
             # LOG.info(f"Scores: {scores[k]}, conf_map shape: {conf_map.shape}, conf_map: {conf_map}")
             # 遍历这个索引，然后将scores加到conf_map上
-            for i in range(x_index_min, x_index_max + 1):
-                for j in range(y_index_min, y_index_max + 1):
+            for i in range(x_index_min, x_index_max):
+                for j in range(y_index_min, y_index_max):
                     if agg == "max":
+                        LOG.debug(f"Updating conf_map[{i}, {j}] with score {scores[k]}")
                         conf_map[i, j] = max(conf_map[i, j], scores[k])
                     elif agg == "sum":
                         conf_map[i, j] += scores[k]
