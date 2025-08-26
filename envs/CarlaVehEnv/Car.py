@@ -57,7 +57,6 @@ class Car():
     def apply_control(self, time_step, actions, area_cnt):
         times_slice = 2 * self.summary_slices + self.feature_slices * area_cnt + self.process_slices
         self.cur_fused_conf_map[...] = self.last_fused_conf_map  # 原地覆盖
-
         np.maximum(self.cur_fused_conf_map, self.local_conf_map, out=self.cur_fused_conf_map)
 
         for vid, action in actions.items():
@@ -67,7 +66,6 @@ class Car():
                     # fuse to fused map
                     if self.cur_fused_conf_map[index_x, index_y] < score:
                         self.cur_fused_conf_map[index_x, index_y] = score
-        
         # apply delay
         decay = np.exp(-(times_slice * self.time_slice_unit + self.dataset.frequency))
         self.cur_fused_conf_map *= decay
@@ -146,6 +144,7 @@ class Car():
 
         self.dataset.boxes_to_conf_map(self.local_conf_map, objects_world, scores)
         state.update({'local_map': self.local_conf_map,
+                      'cur_fused_map': self.cur_fused_conf_map, # for evaluation
                       'last_fused_map': self.last_fused_conf_map,
                       'last_slices_cnt': self.last_slices_cnt,
                       'current_slices_limits': self.current_slices_limits})

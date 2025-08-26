@@ -49,7 +49,7 @@ def master():
         while not done:
             local_maps, adj, fused_maps, prev_b, curr_b = env.wrapper_state(obs)   # 获取状态特征和邻接矩阵
             states_tuple = (local_maps, adj, fused_maps, prev_b, curr_b)
-            score_map, action, logp, value = env.action_select(states_tuple)
+            score_map, action, logp, value = env.action_select(states_tuple, max_k=config_args.max_bandwidth_slices)
             obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated  # 判断是否结束
             buffer.add(states_tuple, score_map, logp, value, reward, done)

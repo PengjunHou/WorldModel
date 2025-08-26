@@ -367,7 +367,7 @@ class CarlaEnv(gym.Env):
         LOG.info(f"Selected actions: {actions}")
         return actions
     
-    def action_select(self, states_tuple, max_k: int = 3):
+    def action_select(self, states_tuple, max_k: int = 30):
         """
         输入:
         state: np.ndarray 或 torch.Tensor, 形状 [B, N, 1, H, W]
