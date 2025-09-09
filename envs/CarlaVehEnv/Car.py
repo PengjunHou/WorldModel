@@ -2,6 +2,7 @@ from envs.CarlaVehEnv.Sensor import Lidar, Camera
 from envs.CarlaVehEnv.CarlaDataCollector import V2XSimReader
 from envs.CarlaVehEnv.Visualize import visualize_step
 from envs.CarlaVehEnv.utils import *
+from envs.CarlaVehEnv.Comm_Comp_settings import Comm_Comp_Base
 from coperception.datasets import V2XSimDet
 from coperception.configs import Config, ConfigGlobal
 from nuscenes.utils.geometry_utils import transform_matrix
@@ -28,6 +29,7 @@ class Car():
         self.results_path = os.path.join(self.config.result_path, f"vehicle_{self.vid:02d}")
         self.setup()
         self.sensor_channel = "LIDAR_TOP"
+        self.strategy = config.strategy
 
         self.V2X_config = Config("train", binary=True, only_det=True)
         self.V2X_config_global = ConfigGlobal("train", binary=True, only_det=True)
@@ -35,18 +37,14 @@ class Car():
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.last_slices_cnt = 0
         self.current_slices_limits = 0
-
+        
         # define the map
         self.local_conf_map = np.zeros((self.dataset.map_dims[0], self.dataset.map_dims[1]), dtype=np.float32)
         self.cur_fused_conf_map = np.zeros((self.dataset.map_dims[0], self.dataset.map_dims[1]), dtype=np.float32)
         self.last_fused_conf_map = np.zeros((self.dataset.map_dims[0], self.dataset.map_dims[1]), dtype=np.float32)
         self.RoI_area_extents = self.V2X_config.area_extents
 
-        self.time_slice_unit = self.config.time_slice_unit
-        self.summary_slices = self.config.summary_slices
-        self.feature_slices = self.config.feature_slices
-        self.process_slices = self.config.process_slices
-        self.step_total_slices = self.dataset.frequency / self.time_slice_unit
+        self.comm_comp_model = Comm_Comp_Base(self.config)
 
 
     def setup(self):
@@ -55,21 +53,22 @@ class Car():
 
 
     def apply_control(self, time_step, actions, area_cnt):
-        times_slice = 2 * self.summary_slices + self.feature_slices * area_cnt + self.process_slices
         self.cur_fused_conf_map[...] = self.last_fused_conf_map  # 原地覆盖
         np.maximum(self.cur_fused_conf_map, self.local_conf_map, out=self.cur_fused_conf_map)
 
         for vid, action in actions.items():
             if vid != self.vid:
                 for index_x, index_y, score in action:
-                    assert self.local_conf_map[index_x, index_y] <= score, f"Score {score} is less than current value {self.local_conf_map[index_x, index_y]} at ({index_x}, {index_y}) at time step {time_step}"
+                    # assert self.local_conf_map[index_x, index_y] <= score, f"Score {score} is less than current value {self.local_conf_map[index_x, index_y]} at ({index_x}, {index_y}) at time step {time_step}"
                     # fuse to fused map
                     if self.cur_fused_conf_map[index_x, index_y] < score:
                         self.cur_fused_conf_map[index_x, index_y] = score
         # apply delay
-        decay = np.exp(-(times_slice * self.time_slice_unit + self.dataset.frequency))
-        self.cur_fused_conf_map *= decay
+        map_size = self.local_conf_map.shape[0] * self.local_conf_map.shape[1]
+        times_delay_cop = self.comm_comp_model.get_time_up0() + self.comm_comp_model.get_time_up1(map_size, area_cnt) + self.comm_comp_model.get_time_down() + self.comm_comp_model.get_time_proc(map_size, area_cnt)
+        decay = np.exp(-times_delay_cop)
         self.last_fused_conf_map = self.cur_fused_conf_map.copy()
+        self.cur_fused_conf_map *= decay
         delay = np.exp( - self.dataset.frequency)
         self.last_fused_conf_map *= delay
         
@@ -85,7 +84,7 @@ class Car():
         return metadata[time_step]
 
     @torch.no_grad()
-    def get_state(self, time_step: int):
+    def get_state(self, time_step):
         """
         返回该车在给定time_step的观测与检测结果：
         - objects_local: (N,4,2) 本地BEV四角点
@@ -94,6 +93,9 @@ class Car():
         """
         self.local_conf_map = np.zeros((self.dataset.map_dims[0], self.dataset.map_dims[1]), dtype=np.float32)
         state = {'vid': self.vid, 'time_step': time_step}
+
+        # self.last_slices_cnt = self.current_slices_limits
+        # self.current_slices_limits = theory_K_star #self.comm_comp_model.compute_k_star(self.config.num_vehicles, self.dataset.map_dims[0] * self.dataset.map_dims[1], lamba=IoU)
 
         objects_local, scores, trans_matrix = self.run_detection(time_step, det_method="points count", visualize = self.visualize)  # 使用点云数量检测
 
@@ -356,13 +358,23 @@ class CarLeader(Car):
         pass
 
 class Clusters():
-    def __init__(self, config, dataset, cluster_id, leader_id, vehicles):
+    def __init__(self, config, dataset, cluster_id, leader_id, vehicles, pre_IoU_step, pre_IoU2K_star, pre_Iou):
         self.config = config
         self.dataset : V2XSimReader = dataset
         self.cluster_id = cluster_id
         self.members : dict[Car] = vehicles # vid -> Car
         assert leader_id in range(len(vehicles)), "Leader ID is not in the cluster"
         self.leader = vehicles[leader_id]
+        self.comm_comp_model = Comm_Comp_Base(self.config)
+        self.IoU = 0
+        self.K_star_value = 0
+        self.pre_IoU_step = pre_IoU_step
+        self.pre_IoU2K_star = pre_IoU2K_star
+        self.pre_Iou = pre_Iou
+        LOG.info(f"pre_IoU_step : {pre_IoU_step}")
+        LOG.info(f"pre_IoU2K_star : {pre_IoU2K_star}")
+        LOG.info(f"pre_Iou : {pre_Iou}")
+
         LOG.debug(f"members: f{self.members}")
 
     # def add_member(self, member):
@@ -384,6 +396,27 @@ class Clusters():
     def get_leader(self):
         return self.leader
     
+    def compute_IoU(self, gamma):
+        lam = (2.0 * gamma) / (1.0 + gamma)
+        lam = max(0.0, min(1.0, lam))
+        return lam
+    
+    def overlap(self, agent_obs1, agent_obs2):
+        # 判断两个Agent的local confidence map是否有重叠
+        local_map1 = agent_obs1.get("local_map")
+        local_map2 = agent_obs2.get("local_map")
+
+        if local_map1 is None or local_map2 is None:
+            return False, 0.0
+
+        overlap_area = np.logical_and(local_map1 > 0, local_map2 > 0)
+        a = np.sum(local_map1 > 0 )
+        b = np.sum(local_map2 > 0 )
+        union = a + b - np.sum(overlap_area)
+        overlap_degree = np.sum(overlap_area) / union if union > 0 else 0.0
+
+        return np.any(overlap_area), overlap_degree
+
     def get_state(self, time_step):
         # Return the state of the cluster
         cluster_state = {}
@@ -393,6 +426,38 @@ class Clusters():
             member_state = member.get_state(time_step)
             cluster_state[member.vid] = member_state
             local_maps.append(member_state["local_map"])
+
+        N = self.config.num_vehicles
+        IoU = 0
+        theory_K_star = 0
+        if not self.pre_Iou:
+            mean_overlap = 0
+            cnt = 0
+            
+            for i in range(N):
+                for j in range(i + 1, N):
+                    do_overlap, overlap_degree = self.overlap(cluster_state[i + 1], cluster_state[j + 1])
+                    mean_overlap += overlap_degree
+                    cnt += 1
+            mean_overlap = mean_overlap / max(cnt, 1)
+            
+            IoU = self.compute_IoU(mean_overlap)
+            theory_K_star, info = self.comm_comp_model.compute_k_star(self.config.num_vehicles, self.dataset.map_dims[0] * self.dataset.map_dims[1], IoU)
+        else:
+            IoU = self.pre_IoU_step[time_step]
+            ind = int(IoU // 0.005)
+            theory_K_star = self.pre_IoU2K_star[ind]
+
+        self.IoU = IoU
+        self.K_star_value = theory_K_star
+        self.comm_comp_model._print(self.members[1].local_conf_map.shape[0] * self.members[1].local_conf_map.shape[1], theory_K_star)
+        LOG.info(f"time step {time_step}, IoU {IoU}, theory K star {theory_K_star}")
+        for i in range(N):
+            self.members[i+1].last_slices_cnt = self.members[i+1].current_slices_limits
+            self.members[i+1].current_slices_limits = theory_K_star
+            cluster_state[i+1].update({
+                'last_slices_cnt': self.members[i+1].current_slices_limits,
+                'current_slices_limits': theory_K_star})
 
         if self.config.visualize:
             token_scene_no = 'scene_5'
@@ -413,10 +478,11 @@ class Clusters():
     
     def step(self, time_step, actions):
         # Update the state of the cluster and its members
-        area_cnt = 0
-        for vid, action in actions.items():
-            area_cnt += len(action)
+        # area_cnt = 0
+        # for vid, action in actions.items():
+        #     area_cnt += len(action)
         for vid, member in self.members.items():    # receive data to update conf map, need to consider the delay
+            area_cnt = len(actions[vid]) if vid in actions.keys() else 0
             member.apply_control(time_step, actions, area_cnt)
     
     def compute_reward(self, time_step):

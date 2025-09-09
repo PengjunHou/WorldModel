@@ -17,16 +17,7 @@ PARSER.add('--visualize', type = int, default = 0, help = 'visualize the environ
 PARSER.add('--seed', type = int, help = 'seed')
 PARSER.add('--n_clusters', type = int, help = 'number of clusters')
 
-PARSER.add('--time_slice_unit', type = float, default = 0.001, help = 'time slice unit')
-PARSER.add('--summary_slices', type = int, default = 10, help = 'number of summary slices')
-PARSER.add('--feature_slices', type = int, default = 1, help = 'number of feature slices')
-PARSER.add('--process_slices', type = int, default = 20, help = 'number of process slices')
-
-PARSER.add('--em_model', required = True, type = str, help = 'embedding model')
-PARSER.add('--pred_model', required = True, type = str, help = 'predictive model')
-PARSER.add('--ctrl_model', required = True, type = str, help = 'controller model')
-
-PARSER.add('--latent_dim', required = True, type = int, help = 'embedding latent model')
+PARSER.add('--Comm_Comp_model', required = True, type = str, default = 'Base', help = 'communication and computing model')
 
 PARSER.add('--time_steps', required = True, type = int, help = 'number of time steps')
 PARSER.add('--strategy', required = True, type = str, help = 'action selection strategy')
@@ -36,7 +27,6 @@ PARSER.add('--epoch', required = True, type = int, default = 100, help = "number
 PARSER.add('--model_checkpt', required = True, type = str, help = 'model checkpoint path')
 PARSER.add('--save_model', required = True, type = int, default = 1, help = "enable save RL model")
 PARSER.add('--load_model', required = True, type = int, default = 0, help = "enable load RL model")
-PARSER.add('--max_bandwidth_slices', required = True, type = int, default = 0, help = "Upbound of uploading areas")
 
 def init_log(level_str):
     ## --------------- 日志的处理 -------------------

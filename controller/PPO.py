@@ -28,8 +28,8 @@ import shutil
 @dataclass
 class ModelConfig:
     C: int = 2             # input channels per vehicle (confidence map channels)
-    H: int = 128            # input height (arbitrary; H != W allowed)
-    W: int = 128            # input width  (arbitrary; H != W allowed)
+    H: int = 42            # input height (arbitrary; H != W allowed)
+    W: int = 44           # input width  (arbitrary; H != W allowed)
     num_vehicles: int = 5
 
     enc_channels: int = 64  # channels after CNN encoder
@@ -40,8 +40,8 @@ class ModelConfig:
     gnn_layers: int = 2
 
     # Action (patch) grid. Actions are continuous in [0,1] per patch.
-    patch_h: int = 16       # number of patches vertically (no need to divide low_h)
-    patch_w: int = 16       # number of patches horizontally (no need to divide low_w)
+    patch_h: int = 42       # number of patches vertically (no need to divide low_h)
+    patch_w: int = 44      # number of patches horizontally (no need to divide low_w)
 
     # budget hidden
     film_hidden: int = 128
@@ -53,7 +53,7 @@ class ModelConfig:
     ent_coef: float = 0.1
     vf_coef: float = 0.01
     max_grad_norm: float = 0.5
-    lr: float = 3e-4
+    lr: float = 0.0001
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 

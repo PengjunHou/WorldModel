@@ -10,7 +10,7 @@ from envs.CarlaVehEnv.Car import Car, Clusters
 from envs.CarlaVehEnv.Object import Object
 from envs.CarlaVehEnv.CarlaDataCollector import V2XSimReader
 from envs.CarlaVehEnv.RSU import RSU
-from envs.CarlaVehEnv.utils import init_detection_model
+from envs.CarlaVehEnv.utils import init_detection_model, topk_2d
 from coperception.datasets import V2XSimDet
 from coperception.configs import Config, ConfigGlobal
 from controller.PPO import ModelConfig, ActorCritic, PPO
@@ -72,14 +72,21 @@ class CarlaEnv(gym.Env):
         self.create_cars()
         self.create_rsu()
         self.create_objects()
+        self.IoU_dist_proc()
 
         self.n_clusters = self.config.n_clusters
         self._init_cluster()
+    
+    def IoU_dist_proc(self):
+        self.IoU_per_step = []
+        self.tmp_IoU2K_star = [[] for _ in range(int(1/0.005))]
+        self.IoU2K_star =  []
+        self.Iou_pre_done = False
 
     def _init_cluster(self, strategy=None):
         self.clusters = []
         for i in range(self.n_clusters):
-            cluster = Clusters(self.config, self.dataset, i, leader_id=1, vehicles=self.cars)
+            cluster = Clusters(self.config, self.dataset, i, leader_id=1, vehicles=self.cars, pre_IoU_step = self.IoU_per_step, pre_IoU2K_star = self.IoU2K_star, pre_Iou = self.Iou_pre_done)
             self.clusters.append(cluster)
 
     def create_maps(self):
@@ -133,6 +140,12 @@ class CarlaEnv(gym.Env):
         return obs, info  # gymnasium 格式
 
     def step(self, action):
+        if not self.Iou_pre_done:
+            self.IoU_per_step.append(self.clusters[0].IoU)
+            K_star = self.clusters[0].K_star_value
+            ind = int(self.clusters[0].IoU // 0.005)
+            self.tmp_IoU2K_star[ind].append(K_star)
+
         next_time_step = self.cur_time_step + 1
 
         for cluster in self.clusters: # TODO，there is only one cluster now
@@ -141,6 +154,14 @@ class CarlaEnv(gym.Env):
         if next_time_step >= self.time_step_length:
             terminated, truncated = True, False
             obs = None
+            if not self.Iou_pre_done:
+                LOG.info(f"tmp_IoU2K_star: {self.tmp_IoU2K_star}")
+                for i in range(len(self.tmp_IoU2K_star)):
+                    if len(self.tmp_IoU2K_star[i]) == 0:
+                        self.IoU2K_star.append(0)
+                    else:
+                        self.IoU2K_star.append(np.mean(self.tmp_IoU2K_star[i]))
+            self.Iou_pre_done = True
         else:
             terminated, truncated = False, False
             obs = self._get_observation(next_time_step)
@@ -367,7 +388,7 @@ class CarlaEnv(gym.Env):
         LOG.info(f"Selected actions: {actions}")
         return actions
     
-    def action_select(self, states_tuple, max_k: int = 30):
+    def action_select(self, states_tuple, max_k):
         """
         输入:
         state: np.ndarray 或 torch.Tensor, 形状 [B, N, 1, H, W]
@@ -391,12 +412,13 @@ class CarlaEnv(gym.Env):
 
         B, N, C, H, W = local_maps.shape
         _, P, Q = scores_map.shape
-        LOG.info(f"Batch size: {B}, Vehicles: {N}, Channels: {C}, Height: {H}, Width: {W}, Patches: {P}, QPatches: {Q}")
+        
         
         k = max(0, min(max_k, P * Q))   #  k 不超过网格大小
         if k == 0:
             return {} if B == 1 else [{} for _ in range(B)]
 
+        LOG.info(f"Batch size: {B}, Vehicles: {N}, Channels: {C}, Height: {H}, Width: {W}, Patches: {P}, QPatches: {Q}, k: {k}")
         # ---- 3) 用 torch.topk 在 patch 网格上取 Top-K（每个 batch 各取 k 个）----
         flat = scores_map.reshape(B, -1)                           # [B, P*Q]
         topk_vals, topk_idx = torch.topk(flat, k=k, dim=1, largest=True, sorted=True)  # [B,k], [B,k]
@@ -416,18 +438,42 @@ class CarlaEnv(gym.Env):
         actions_batch = []
         for b in range(B):
             actions = {}
-            for m in range(k):
-                p = int(topk_rows[b, m].item())
-                q = int(topk_cols[b, m].item())
+            if self.config.strategy == 'RL':
+                for m in range(k):
+                    p = int(topk_rows[b, m].item())
+                    q = int(topk_cols[b, m].item())
 
-                # 在 N 辆车这个 (p,q) 位置上取最大者
-                per_vehicle_vals = low_maps[b, :, p, q]            # [N]
-                picked_j = int(torch.argmax(per_vehicle_vals).item())
-                vid = picked_j + 1                                 # 车辆ID从 1 开始
-                assert local_maps[b, picked_j, 0, p, q] == self.cars[vid].local_conf_map[p, q], \
-                    f"Mismatch at batch {b}, vehicle {vid}: {local_maps[b, picked_j, 0, p, q]} vs {self.cars[vid].local_conf_map[p, q]} at time step {self.cur_time_step} "
+                    # 在 N 辆车这个 (p,q) 位置上取最大者
+                    per_vehicle_vals = low_maps[b, :, p, q]            # [N]
+                    picked_j = int(torch.argmax(per_vehicle_vals).item())
+                    vid = picked_j + 1                                 # 车辆ID从 1 开始
+                    assert local_maps[b, picked_j, 0, p, q] == self.cars[vid].local_conf_map[p, q], \
+                        f"Mismatch at batch {b}, vehicle {vid}: {local_maps[b, picked_j, 0, p, q]} vs {self.cars[vid].local_conf_map[p, q]} at time step {self.cur_time_step} "
 
-                actions.setdefault(vid, []).append((p, q, per_vehicle_vals[picked_j].item()))  # (p, q, score)
+                    actions.setdefault(vid, []).append((p, q, per_vehicle_vals[picked_j].item()))  # (p, q, score)
+            elif self.config.strategy == "Random":
+                for m in range(k):
+                    vid = np.random.randint(1, N+1)
+                    p = np.random.randint(0, H)
+                    q = np.random.randint(0, W)
+                    actions.setdefault(vid, []).append((p, q, self.cars[vid].local_conf_map[p, q]))
+            elif self.config.strategy == 'Single':
+                for m in range(N):
+                    vid = m + 1
+                    actions.setdefault(vid, [])
+            elif self.config.strategy == "Greedy":
+                avg_cnt = k // N
+                for vid in range(1, N+1):
+                    cnt = avg_cnt
+                    if vid == N:
+                        cnt = k - avg_cnt * (N-1)
+                    values, p, q = topk_2d(self.cars[vid].local_conf_map, cnt)
+                    for tmp in range(len(values)):
+                        actions.setdefault(vid, []).append((p[tmp], q[tmp], self.cars[vid].local_conf_map[p[tmp], q[tmp]]))
+            elif self.config.strategy == "Detection":
+                pass
+            else:
+                raise ValueError(f"unimlemented strategy {self.config.strategy}")
             actions_batch.append(actions)
 
         if B == 1:

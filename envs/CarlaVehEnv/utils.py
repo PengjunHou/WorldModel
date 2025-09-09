@@ -491,3 +491,34 @@ def overlay_confidence_maps(maps, alphas=None, title="Overlay of 5 vehicle confi
 # summed_norm = summed / np.max(summed)
 # plt.imsave('/mnt/data/overlay_confidence_maps_demo.png', summed_norm)
 
+
+
+def topk_2d(a: np.ndarray, k: int, *, keepdims=False):
+    """
+    在二维数组 a 中寻找最大的 k 个元素。
+    返回:
+      values: (k,) 或 (k,1,1) 的数组（按从大到小排序）
+      rows:   (k,) 的行索引
+      cols:   (k,) 的列索引
+    说明:
+      - 使用 argpartition O(n) 选出前 k，再全排序这 k 个。
+      - 若含 NaN，默认把 NaN 当作最小（不会进入 Top-K）。
+    """
+
+    # 将 NaN 处理为 -inf，避免进入 Top-K
+    a_flat = a.reshape(-1)
+    safe = np.where(np.isnan(a_flat), -np.inf, a_flat)
+    # 先用 argpartition 取出前 k 个（位置无序，但比其余元素都大）
+    part_idx = np.argpartition(safe, -k)[-k:]
+    # 再对这 k 个进行排序（从大到小）
+    order = np.argsort(safe[part_idx])[::-1]
+    topk_flat_idx = part_idx[order]
+
+    values = a_flat[topk_flat_idx]
+    rows, cols = np.unravel_index(topk_flat_idx, a.shape)
+
+    if keepdims:
+        # 可选：保持二维 map 的形状语义（比如做可视化时方便）
+        values = values[:, None, None]
+
+    return values, rows, cols
