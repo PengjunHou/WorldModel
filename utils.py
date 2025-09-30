@@ -21,12 +21,15 @@ PARSER.add('--Comm_Comp_model', required = True, type = str, default = 'Base', h
 
 PARSER.add('--time_steps', required = True, type = int, help = 'number of time steps')
 PARSER.add('--strategy', required = True, type = str, help = 'action selection strategy')
+PARSER.add('--RL_model', required = True, type = str, help = 'RL_model')
 PARSER.add('--obs_dim', required = False, type = int, help = 'observation dimension')
 PARSER.add('--action_dim', required = False, type = int, help = 'action dimension')
 PARSER.add('--epoch', required = True, type = int, default = 100, help = "number of epoch")
 PARSER.add('--model_checkpt', required = True, type = str, help = 'model checkpoint path')
 PARSER.add('--save_model', required = True, type = int, default = 1, help = "enable save RL model")
 PARSER.add('--load_model', required = True, type = int, default = 0, help = "enable load RL model")
+PARSER.add('--bc_steps', required = False, type = int, default = 100, help = "number of behavior cloning steps")
+PARSER.add('--bc_samples', required = False, type = int, default = 1000, help = "number of behavior cloning samples")
 
 def init_log(level_str):
     ## --------------- 日志的处理 -------------------
@@ -56,7 +59,7 @@ def init_log(level_str):
     if log_level < logging.INFO:
         streams = [logging.FileHandler(log_file, mode='w'), logging.StreamHandler()]
     else:
-        print("Only minimum output to console -> see log-file")
+        #print("Only minimum output to console -> see log-file")
         streams = [logging.FileHandler(log_file)]
     ## 这里加上日志的信息和对应的代码行数，输出格式：日期-时间-文件名：行数：日志信息
     logging.basicConfig(handlers=streams,

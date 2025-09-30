@@ -51,7 +51,7 @@ def master():
         local_maps, adj, fused_maps, prev_b, curr_b = env.wrapper_state(obs)
         states_tuple = (local_maps, adj, fused_maps, prev_b, curr_b)
         max_k = curr_b[0][0]
-        print(f"current max time slices cnt {max_k.item()}, {type(max_k)}")
+        #print(f"current max time slices cnt {max_k.item()}, {type(max_k)}")
         score_map, action, logp, value = env.action_select(states_tuple, max_k=int(max_k.item()))
         obs, reward, terminated, truncated, _ = env.step(action)
         done = terminated  # 判断是否结束
@@ -59,7 +59,7 @@ def master():
 
         # for evaluation
         if obs is not None:
-            # print(f"obs len {len(obs)}, keys {obs[0].keys()}")
+            # #print(f"obs len {len(obs)}, keys {obs[0].keys()}")
             evaluation_maps.append(copy.deepcopy(obs))
 
     plt.close('all')
@@ -71,9 +71,9 @@ if __name__ == '__main__':
     args = PARSER.parse_args()
     level_str = "info"
     init_log(level_str)
-    print(args)
-    print(args.env_name)
-    print(args.seed)
+    #print(args)
+    #print(args.env_name)
+    #print(args.seed)
 
     # multi-processing
     # from mpi4py import MPI

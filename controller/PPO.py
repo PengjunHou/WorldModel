@@ -51,9 +51,9 @@ class ModelConfig:
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
     ent_coef: float = 0.1
-    vf_coef: float = 0.01
+    vf_coef: float = 0.001
     max_grad_norm: float = 0.5
-    lr: float = 0.0001
+    lr: float = 0.00001
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -161,45 +161,103 @@ class VehicleAttentionFusion(nn.Module):
         return F_fused
 
 
+# -----------------------------
+# Residual + SE blocks (用于更深的 Actor 和 Critic)
+# -----------------------------
+class SE(nn.Module):
+    def __init__(self, c, r=8):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(c, max(4, c // r)), nn.ReLU(inplace=True),
+            nn.Linear(max(4, c // r), c), nn.Sigmoid()
+        )
+    def forward(self, x):
+        w = self.fc(x).view(x.size(0), x.size(1), 1, 1)
+        return x * w
+
+class ResBlock(nn.Module):
+    def __init__(self, c):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.GroupNorm(8, c),
+            nn.Conv2d(c, c, 3, padding=1), nn.ReLU(inplace=True),
+            nn.GroupNorm(8, c),
+            nn.Conv2d(c, c, 3, padding=1)
+        )
+        self.se = SE(c)
+    def forward(self, x):
+        y = self.net(x)
+        y = self.se(y)
+        return F.relu(x + y, inplace=True)
+
+
+# -----------------------------
+# Stronger ActorDecoder
+# -----------------------------
 class ActorDecoder(nn.Module):
-    """Decode fused low-res features to per-patch Beta parameters (alpha,beta >= 1.1).
-    Actions live on a (P x Q) patch grid. You can upsample later to HxW if needed.
-    """
+    """Deeper conv decoder with residual blocks + two-stage upsampling."""
     def __init__(self, cfg: ModelConfig):
         super().__init__()
-        self.cfg = cfg
-        self.dec = nn.Sequential(
-            nn.Conv2d(cfg.enc_channels, cfg.enc_channels, 3, padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(cfg.enc_channels, 64, 3, padding=1), nn.ReLU(inplace=True),
+        C = cfg.enc_channels
+        self.stage1 = nn.Sequential(
+            nn.Conv2d(C, C, 3, padding=1), nn.ReLU(inplace=True),
+            ResBlock(C), ResBlock(C)
         )
-        self.head = nn.Conv2d(64, 2, kernel_size=1)  # -> [alpha_raw, beta_raw]
+        # 先到一半分辨率
+        mid_h, mid_w = max(1, cfg.patch_h // 2), max(1, cfg.patch_w // 2)
+        self.mid_h, self.mid_w = mid_h, mid_w
 
-    def forward(self, F_fused: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        B, C, h, w = F_fused.shape
-        x = self.dec(F_fused)
-        # resize to (patch_h, patch_w)
+        self.stage2 = nn.Sequential(
+            nn.Conv2d(C, C, 3, padding=1), nn.ReLU(inplace=True),
+            ResBlock(C), nn.Conv2d(C, 96, 3, padding=1), nn.ReLU(inplace=True),
+        )
+        self.stage3 = nn.Sequential(
+            nn.Conv2d(96, 64, 3, padding=1), nn.ReLU(inplace=True),
+            ResBlock(64)
+        )
+        self.head = nn.Conv2d(64, 2, kernel_size=1)
+        self.cfg = cfg
+
+    def forward(self, F_fused: torch.Tensor):
+        x = self.stage1(F_fused)  
+        # 到中尺度
+        x = F.interpolate(x, size=(self.mid_h, self.mid_w), mode="bilinear", align_corners=False)
+        x = self.stage2(x)
+        # 到目标尺寸
         x = F.interpolate(x, size=(self.cfg.patch_h, self.cfg.patch_w), mode="bilinear", align_corners=False)
-        out = self.head(x)  # [B, 2, P, Q]
-        alpha_raw, beta_raw = out[:, 0], out[:, 1]  # [B, P, Q]
-        # map to >= 1.1 to avoid extreme betas early in training
+        x = self.stage3(x)
+        out = self.head(x)  # [B,2,H,W]
+        alpha_raw, beta_raw = out[:, 0], out[:, 1]
         alpha = F.softplus(alpha_raw) + 1.1
-        beta = F.softplus(beta_raw) + 1.1
+        beta  = F.softplus(beta_raw)  + 1.1
         return alpha, beta
 
 
+# -----------------------------
+# Stronger CriticHead
+# -----------------------------
 class CriticHead(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.mlp = nn.Sequential(
-            nn.Linear(cfg.enc_channels, 128), nn.ReLU(inplace=True),
-            nn.Linear(128, 1)
+        C = cfg.enc_channels
+        self.tower = nn.Sequential(
+            nn.Conv2d(C, C, 3, padding=1), nn.ReLU(inplace=True),
+            ResBlock(C)
         )
-
-    def forward(self, F_fused: torch.Tensor) -> torch.Tensor:
-        B, C, h, w = F_fused.shape
-        g = self.pool(F_fused).view(B, C)
-        v = self.mlp(g).squeeze(-1)  # [B]
+        self.pool_avg = nn.AdaptiveAvgPool2d(1)
+        self.pool_max = nn.AdaptiveMaxPool2d(1)
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * C, 256), nn.ReLU(inplace=True),
+            nn.Linear(256, 1)
+        )
+    def forward(self, F_fused: torch.Tensor):
+        x = self.tower(F_fused)
+        a = self.pool_avg(x).flatten(1)
+        m = self.pool_max(x).flatten(1)
+        g = torch.cat([a, m], dim=1)      # [B, 2C]
+        v = self.mlp(g).squeeze(-1)
         return v
 
 
@@ -371,6 +429,21 @@ class PPO:
             ab_sum = (alphas + betas).mean().item()
             ent_mean = entropy.mean().item()
         return new_logps, new_values, entropy, ab_sum, ent_mean
+    
+    def action_select(self, states, deterministic=False):
+        local_maps, adjs, fused_maps, prev_b, curr_b = states
+        # ---- 1) 转成 torch.Tensor 并放到正确设备 ----
+        # feature = torch.as_tensor(state, dtype=torch.float32, device=device)          # [B,N,1,H,W]
+        # adjacency = torch.as_tensor(adjacency_matrix, dtype=torch.float32, device=device)  # [B,N,N]
+
+        # ---- 2) 前向网络，采样 scores_map（[B,P,Q]）----
+        out = self.model(local_maps, adjs, fused_maps, prev_b, curr_b)
+        alpha, beta, value = out["alpha"], out["beta"], out["value"]  # [B,P,Q], [B]
+        dist = Beta(alpha, beta)
+        scores_map = dist.rsample().clamp(1e-6, 1-1e-6)               # [B,P,Q]
+        logp = dist.log_prob(scores_map).sum(dim=(1, 2))
+        return scores_map, logp, value
+
 
     def update(self, batch: Dict[str, torch.Tensor], get_new_logp_fn=None):
         cfg = self.cfg
@@ -597,7 +670,7 @@ def load_checkpoint(model: torch.nn.Module,
 
     if verbose:
         step = payload.get("step", None)
-        print(f"[load] loaded '{ckpt_path}' (step={step}, strict={strict}, map_location={map_location})")
+        #print(f"[load] loaded '{ckpt_path}' (step={step}, strict={strict}, map_location={map_location})")
 
     return {
         "cfg": cfg_loaded,

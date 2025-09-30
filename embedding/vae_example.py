@@ -13,10 +13,10 @@ input = load_image(input_file) / 255.0
 input = torch.from_numpy(input).unsqueeze(0).float().to(device)
 
 recon_tensor = vae.reconstruct(input, "img")
-print(f"reconstruction shape {recon_tensor.shape}")
+#print(f"reconstruction shape {recon_tensor.shape}")
 
 embedding = vae.embedding(input, "img")
-print(f"embedding shape {embedding.shape}")
+#print(f"embedding shape {embedding.shape}")
 
 decode_sensor = vae.decode(embedding, "img")
-print(f"decode shape {decode_sensor.shape}")
+#print(f"decode shape {decode_sensor.shape}")

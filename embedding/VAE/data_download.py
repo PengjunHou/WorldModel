@@ -34,19 +34,19 @@ def main():
     )
     args = parser.parse_args()
     if not "dataset" in args:
-        print("dataset argument not found in", args)
+        #print("dataset argument not found in", args)
         parser.print_help()
         return 1
 
     tv_datasets = {"mnist": MNIST, "celeba": CelebA, "cifar10": CIFAR10}
     rootdir = args.outdir
     if not rootdir.exists():
-        print(f"creating root folder {rootdir}")
+        #print(f"creating root folder {rootdir}")
         rootdir.mkdir(parents=True)
 
     for dname in args.dataset:
         if dname.lower() not in tv_datasets.keys():
-            print(f"{dname} not available for download yet. skipping.")
+            #print(f"{dname} not available for download yet. skipping.")
             continue
 
         dfolder = rootdir / dname
@@ -79,14 +79,14 @@ def main():
 
         train_x = np.concatenate(train_batches)
         np.savez_compressed(dfolder / "train_data.npz", data=train_x)
-        print(
+        #print(
             "Wrote ",
             dfolder / "train_data.npz",
             f"(shape {train_x.shape}, {train_x.dtype})",
         )
         val_x = np.concatenate(val_batches)
         np.savez_compressed(dfolder / "eval_data.npz", data=val_x)
-        print(
+        #print(
             "Wrote ", dfolder / "eval_data.npz", f"(shape {val_x.shape}, {val_x.dtype})"
         )
 

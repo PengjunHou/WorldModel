@@ -94,7 +94,7 @@ def visualize_step(step_idx, files, base_path, fig, axs):
                 ax.imshow(img)
                 ax.set_title(f"Obj {obj_idx}")
             except Exception as e:
-                print(f"[WARN] Error loading {fpath}: {e}")
+                #print(f"[WARN] Error loading {fpath}: {e}")
                 ax.set_title(f"Obj {obj_idx} (Error)")
         else:
             ax.set_title(f"Obj {obj_idx} (Missing)")

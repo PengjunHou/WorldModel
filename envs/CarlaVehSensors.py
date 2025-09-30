@@ -14,6 +14,9 @@ from envs.CarlaVehEnv.utils import init_detection_model, topk_2d
 from coperception.datasets import V2XSimDet
 from coperception.configs import Config, ConfigGlobal
 from controller.PPO import ModelConfig, ActorCritic, PPO
+from controller.DPPO_agent import DPPO
+from controller.model.diffusion_ppo import PPODiffusion
+from controller.cfg.dppo_cfg import DPPOConfig
 from torch.utils.tensorboard import SummaryWriter
 
 import logging
@@ -53,11 +56,17 @@ class CarlaEnv(gym.Env):
         # self.PPO_agent = PPOAgent(
         #     input_dim=obs_dim, hidden_dim=config.hidden_dim, num_areas=self.n_vehicles,
         #     lr=config.lr, gamma=config.gamma, eps_clip=config.eps_clip)
-
-        self.RL_cfg = ModelConfig(H = self.dataset.map_dims[0], W = self.dataset.map_dims[1], num_vehicles=self.n_vehicles, patch_h = self.dataset.map_dims[0], patch_w = self.dataset.map_dims[1])
-        self.RL_device = self.RL_cfg.device
-        self.RL_model = ActorCritic(self.RL_cfg).to(self.RL_device)
-        self.RL_agent = PPO(self.RL_model, self.RL_cfg)
+        if config.strategy == "RL" and config.RL_model == "PPO":
+            self.RL_cfg = ModelConfig(H = self.dataset.map_dims[0], W = self.dataset.map_dims[1], num_vehicles=self.n_vehicles, patch_h = self.dataset.map_dims[0], patch_w = self.dataset.map_dims[1])
+            self.RL_device = self.RL_cfg.device
+            self.RL_model = ActorCritic(self.RL_cfg).to(self.RL_device)
+            self.RL_agent = PPO(self.RL_model, self.RL_cfg)
+        elif config.strategy == "RL" and config.RL_model == "DPPO":
+            obs_shape = self.dataset.map_dims
+            self.RL_cfg = DPPOConfig(config, obs_dim=obs_shape, action_dim=obs_shape)
+            self.RL_device = self.RL_cfg.device
+            # self.RL_model = PPODiffusion(self.RL_cfg)
+            self.RL_agent = DPPO(self.RL_cfg)
         res_path = config.result_path
         self.sumary_writer = SummaryWriter(log_dir=os.path.join(res_path, "tensorboard"))
 
@@ -348,47 +357,53 @@ class CarlaEnv(gym.Env):
         LOG.info(f"feature matrix shape: {feature_matrix.shape}, adjacency matrix shape: {adjacency_matrix.shape}")
 
         return feature_matrix, adjacency_matrix
-
-    def action_select_old(self, feature, adjacency_matrix):
-        # 根据当前状态选择动作
-        # scores_map, _, _ = self.PPO_agent.select_action(state, adjacency_matrix)       # 这里其实应该生成scores map
-        # scores_map = np.random.rand(self.global_conf_map.shape[0], self.global_conf_map.shape[1])
-        out = self.RL_model(feature, adjacency_matrix)  
-        alpha, beta, value = out["alpha"], out["beta"], out["value"]  # [B,P,Q], [B]
-        dist = Beta(alpha, beta)
-        scores_map = dist.rsample()                        # [B,P,Q], reparameterized sample
-        scores_map = scores_map.clamp(1e-6, 1-1e-6)           # 避免边界数值问题
-        logp = dist.log_prob(scores_map).sum(dim=(1,2))   # [B]
-
-        # 找到scores_map中最大的K个值对应的区域索引
-        max_k = 3
-        if max_k > 0:
-            top_k_indices = np.unravel_index(np.argsort(scores_map, axis=None)[-max_k:], scores_map.shape)
-            top_k_scores = scores_map[top_k_indices]
-            LOG.info(f"Top {max_k} scores: {top_k_scores}, indices: {top_k_indices}")
-        else:
-            top_k_indices = ([], [])
-            top_k_scores = []
-
-        # 比较所有车辆中对应索引位置，谁的值最大。由最大值对应的车辆执行动作，可以将每辆车需要执行的动作存储在一个dict中，key为车辆ID，value为动作
-        actions = {}
-        for i in range(len(top_k_indices[0])):
-            selected_vehicle = -1
-            max_value = -1
-            for j in range(self.n_vehicles):
-                if self.cars[j+1].local_conf_map[top_k_indices[0][i], top_k_indices[1][i]] > max_value:
-                    max_value = self.cars[j+1].local_conf_map[top_k_indices[0][i], top_k_indices[1][i]]
-                    selected_vehicle = j + 1
-            
-            if selected_vehicle != -1:
-                if selected_vehicle not in actions:
-                    actions[selected_vehicle] = []
-                actions[selected_vehicle].append((top_k_indices[0][i], top_k_indices[1][i], top_k_scores[i]))
-        
-        LOG.info(f"Selected actions: {actions}")
-        return actions
     
-    def action_select(self, states_tuple, max_k):
+    def score_map2action(self, score_map, local_maps, max_k):
+        """
+        输入:
+        score_map: np.ndarray 或 torch.Tensor, 形状 [P, Q]
+        返回:
+        list of (p, q, score)
+        """
+        B, P, Q = score_map.shape
+        k = max(0, min(max_k, P * Q))   #  k 不超过网格大小
+        if k == 0:
+            return {} if B == 1 else [{} for _ in range(B)]
+
+        # ---- 3) 用 torch.topk 在 patch 网格上取 Top-K（每个 batch 各取 k 个）----
+        flat = score_map.reshape(B, -1)                           # [B, P*Q]
+        topk_vals, topk_idx = torch.topk(flat, k=k, dim=1, largest=True, sorted=True)  # [B,k], [B,k]
+        topk_rows = topk_idx // Q                                  # [B,k]
+        topk_cols = topk_idx % Q                                   # [B,k]
+
+        low_maps = local_maps.squeeze(2)  # [B,N,H,W]
+
+        #print(f"score_map shape: {score_map.shape}, topk_vals shape: {topk_vals.shape}, topk_idx shape: {topk_idx.shape}")
+        #print(f"topk_rows: {topk_rows}, topk_cols: {topk_cols}")
+        #print(f"P: {P}, Q: {Q}, k: {k}")
+
+        # ---- 5) 对每个被选中的 patch (p,q)，在 N 辆车里选最大值的那辆 ----
+        actions_batch = []
+        for b in range(B):
+            actions = {}
+            for m in range(k):
+                p = int(topk_rows[b, m].item())
+                q = int(topk_cols[b, m].item())
+
+                # 在 N 辆车这个 (p,q) 位置上取最大者
+                per_vehicle_vals = low_maps[b, :, p, q]            # [N]
+                picked_j = int(torch.argmax(per_vehicle_vals).item())
+                vid = picked_j + 1                                 # 车辆ID从 1 开始
+                assert local_maps[b, picked_j, 0, p, q] == self.cars[vid].local_conf_map[p, q], \
+                    f"Mismatch at batch {b}, vehicle {vid}: {local_maps[b, picked_j, 0, p, q]} vs {self.cars[vid].local_conf_map[p, q]} at time step {self.cur_time_step} "
+
+                actions.setdefault(vid, []).append((p, q, per_vehicle_vals[picked_j].item())) 
+            actions_batch.append(actions)
+        
+
+        return actions_batch
+    
+    def action_select(self, states_tuple, max_k, collection_policy=False):
         """
         输入:
         state: np.ndarray 或 torch.Tensor, 形状 [B, N, 1, H, W]
@@ -404,77 +419,68 @@ class CarlaEnv(gym.Env):
         # adjacency = torch.as_tensor(adjacency_matrix, dtype=torch.float32, device=device)  # [B,N,N]
 
         # ---- 2) 前向网络，采样 scores_map（[B,P,Q]）----
-        out = self.RL_model(local_maps, adjs, fused_maps, prev_b, curr_b)
-        alpha, beta, value = out["alpha"], out["beta"], out["value"]  # [B,P,Q], [B]
-        dist = Beta(alpha, beta)
-        scores_map = dist.rsample().clamp(1e-6, 1-1e-6)               # [B,P,Q]
-        logp = dist.log_prob(scores_map).sum(dim=(1, 2))            
+        # out = self.RL_model(local_maps, adjs, fused_maps, prev_b, curr_b)
+        # alpha, beta, value = out["alpha"], out["beta"], out["value"]  # [B,P,Q], [B]
+        # dist = Beta(alpha, beta)
+        # scores_map = dist.rsample().clamp(1e-6, 1-1e-6)               # [B,P,Q]
+        # logp = dist.log_prob(scores_map).sum(dim=(1, 2))            
+        scores_map, logp, value = self.RL_agent.action_select(states_tuple)
 
         B, N, C, H, W = local_maps.shape
         _, P, Q = scores_map.shape
+        randv = np.random.rand()
+        if collection_policy:
+            if randv < 0.7:
+                collect = "Greedy"
+            elif randv < 0.85:
+                collect = "Random"
+            else:
+                collect = "RL"
         
         
         k = max(0, min(max_k, P * Q))   #  k 不超过网格大小
         if k == 0:
             return {} if B == 1 else [{} for _ in range(B)]
-
         LOG.info(f"Batch size: {B}, Vehicles: {N}, Channels: {C}, Height: {H}, Width: {W}, Patches: {P}, QPatches: {Q}, k: {k}")
-        # ---- 3) 用 torch.topk 在 patch 网格上取 Top-K（每个 batch 各取 k 个）----
-        flat = scores_map.reshape(B, -1)                           # [B, P*Q]
-        topk_vals, topk_idx = torch.topk(flat, k=k, dim=1, largest=True, sorted=True)  # [B,k], [B,k]
-        topk_rows = topk_idx // Q                                  # [B,k]
-        topk_cols = topk_idx % Q                                   # [B,k]
-
-        # ---- 4) 把每辆车的 local map 下采样到 [P,Q]，保证索引一致 ----
-        # feature: [B,N,1,H,W] -> [B*N,1,H,W] -> interpolate -> [B,N,P,Q]
-        # low_maps = F.interpolate(
-        #     feature.view(B * N, 1, H, W),
-        #     size=(P, Q), mode="bilinear", align_corners=False
-        # ).view(B, N, P, Q)                                         # 每辆车在 patch 网格的值
-
-        low_maps = local_maps.squeeze(2)  # [B,N,H,W]
 
         # ---- 5) 对每个被选中的 patch (p,q)，在 N 辆车里选最大值的那辆 ----
         actions_batch = []
-        for b in range(B):
-            actions = {}
-            if self.config.strategy == 'RL':
-                for m in range(k):
-                    p = int(topk_rows[b, m].item())
-                    q = int(topk_cols[b, m].item())
+        if self.config.strategy == 'RL' or (collection_policy and collect == "RL"):
+            actions_batch = self.score_map2action(scores_map, local_maps, k)
+        else:
+            for b in range(B):
+                actions = {}
 
-                    # 在 N 辆车这个 (p,q) 位置上取最大者
-                    per_vehicle_vals = low_maps[b, :, p, q]            # [N]
-                    picked_j = int(torch.argmax(per_vehicle_vals).item())
-                    vid = picked_j + 1                                 # 车辆ID从 1 开始
-                    assert local_maps[b, picked_j, 0, p, q] == self.cars[vid].local_conf_map[p, q], \
-                        f"Mismatch at batch {b}, vehicle {vid}: {local_maps[b, picked_j, 0, p, q]} vs {self.cars[vid].local_conf_map[p, q]} at time step {self.cur_time_step} "
-
-                    actions.setdefault(vid, []).append((p, q, per_vehicle_vals[picked_j].item()))  # (p, q, score)
-            elif self.config.strategy == "Random":
-                for m in range(k):
-                    vid = np.random.randint(1, N+1)
-                    p = np.random.randint(0, H)
-                    q = np.random.randint(0, W)
-                    actions.setdefault(vid, []).append((p, q, self.cars[vid].local_conf_map[p, q]))
-            elif self.config.strategy == 'Single':
-                for m in range(N):
-                    vid = m + 1
-                    actions.setdefault(vid, [])
-            elif self.config.strategy == "Greedy":
-                avg_cnt = k // N
-                for vid in range(1, N+1):
-                    cnt = avg_cnt
-                    if vid == N:
-                        cnt = k - avg_cnt * (N-1)
-                    values, p, q = topk_2d(self.cars[vid].local_conf_map, cnt)
-                    for tmp in range(len(values)):
-                        actions.setdefault(vid, []).append((p[tmp], q[tmp], self.cars[vid].local_conf_map[p[tmp], q[tmp]]))
-            elif self.config.strategy == "Detection":
-                pass
-            else:
-                raise ValueError(f"unimlemented strategy {self.config.strategy}")
-            actions_batch.append(actions)
+                if self.config.strategy == "Random" or (collection_policy and collect == "Random"):
+                    for m in range(k):
+                        vid = np.random.randint(1, N+1)
+                        p = np.random.randint(0, H)
+                        q = np.random.randint(0, W)
+                        actions.setdefault(vid, []).append((p, q, self.cars[vid].local_conf_map[p, q]))
+                        if collection_policy:
+                            LOG.info(f"Random selected actions: {actions}")
+                            scores_map = local_maps.mean(dim=1, keepdim=True).squeeze(2).squeeze(1)  # [B, N, 1, H, W] -> [B, 1, H, W]
+                elif self.config.strategy == 'Single':
+                    for m in range(N):
+                        vid = m + 1
+                        actions.setdefault(vid, [])
+                elif self.config.strategy == "Greedy" or (collection_policy and collect == "Greedy"):
+                    avg_cnt = k // N
+                    for vid in range(1, N+1):
+                        cnt = avg_cnt
+                        if vid == N:
+                            cnt = k - avg_cnt * (N-1)
+                        values, p, q = topk_2d(self.cars[vid].local_conf_map, cnt)
+                        for tmp in range(len(values)):
+                            actions.setdefault(vid, []).append((p[tmp], q[tmp], self.cars[vid].local_conf_map[p[tmp], q[tmp]]))
+                    if collection_policy:
+                        LOG.info(f"Greedy selected actions: {actions}")
+                        scores_map = local_maps.max(dim=1, keepdim=True).squeeze(2).squeeze(1)  # [B, N, 1, H, W] -> [B, 1, H, W]
+                elif self.config.strategy == "Detection":
+                    pass
+                else:
+                    raise ValueError(f"unimlemented strategy {self.config.strategy}")
+                actions_batch.append(actions)
 
         if B == 1:
             return scores_map, actions_batch[0], logp, value

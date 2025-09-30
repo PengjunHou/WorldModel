@@ -208,7 +208,7 @@ def find_K_star_mc(N: int, U: int, cover_prob: float,
             disc = latecy_fn(U, K)
         
         val = ERK * disc
-        # print(f"ERK {ERK}, disc {disc}, value {val}")
+        # #print(f"ERK {ERK}, disc {disc}, value {val}")
         table[K] = {"ERK": ERK, "disc": disc, "value": val}
         if val > best_val:
             best_val, best_K = val, K

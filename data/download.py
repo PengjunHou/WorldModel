@@ -4,5 +4,5 @@ from datasets import load_dataset
 dataset = load_dataset("ai4ce/V2X-Sim-2.0-mini", split="train")
 
 # 查看第一个样本
-print(dataset[0])
+#print(dataset[0])
 dataset[0]["image"].show()

@@ -246,7 +246,7 @@ def get_perf_strategy(config_args, evaluation_maps, max_k, strategy, out_path):
             else:
                 maps = evaluation_maps[time_step][0][agent_i+1]['cur_fused_map']
 
-            print(f"car {agent_i + 1} cur fused map sum 7: {np.sum(maps)}")
+            #print(f"car {agent_i + 1} cur fused map sum 7: {np.sum(maps)}")
             cur_confidence_value += np.sum(maps)
         results.append(cur_confidence_value)
     

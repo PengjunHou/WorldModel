@@ -54,7 +54,7 @@ def load_npz(path: Path) -> np.ndarray:
     arr = as_chw(arr)                                     # -> CHW
     if arr.dtype != np.uint8:
         arr = np.clip(arr, 0, 255).astype("uint8")
-    # print(f"arr shape: {arr.shape}")
+    # #print(f"arr shape: {arr.shape}")
     # arr = resize_tensor(arr, IMG_SIZE) # 尝试不做re'size，避免失真
     return arr     
 
@@ -66,7 +66,7 @@ def load_bin(p: Path) -> np.ndarray:
     
     pts = raw.reshape(-1, 5)
     if pts.shape[0] < N_PTS:
-        print(f"[warn] {p.name}: only {pts.shape[0]} points, padding to {N_PTS}")
+        #print(f"[warn] {p.name}: only {pts.shape[0]} points, padding to {N_PTS}")
         pad = np.zeros((N_PTS - pts.shape[0], 5), dtype=np.float32)
         pts = np.concatenate([pts, pad], axis=0)
     else:
@@ -84,7 +84,7 @@ def load_bin(p: Path) -> np.ndarray:
 #     elif raw.size % 4 == 0: pts = raw.reshape(-1, 4)[:, :3]
 #     elif raw.size % 3 == 0: pts = raw.reshape(-1, 3)
 #     else: raise ValueError(f"size {raw.size} not divisible by 3/4/5")
-#     print(f"pcd bin shape {raw.shape}")
+#     #print(f"pcd bin shape {raw.shape}")
 #     idx = np.random.choice(
 #         pts.shape[0], N_PTS, replace=pts.shape[0] < N_PTS)
 #     return (pts[idx] - pts[idx].mean(0)).astype("float32")
@@ -116,7 +116,7 @@ def split_and_save(samples: List[np.ndarray],
                    ratio: float):
     """随机划分并保存  train / eval"""
     if not samples:
-        print(f"[warn] 无合法 {name} 样本，跳过保存")
+        #print(f"[warn] 无合法 {name} 样本，跳过保存")
         return
     idx = list(range(len(samples)))
     random.shuffle(idx)
@@ -126,13 +126,13 @@ def split_and_save(samples: List[np.ndarray],
 
     np.savez_compressed(outdir / f"{name}_train.npz", data=tr)
     np.savez_compressed(outdir / f"{name}_eval.npz",  data=ev)
-    print(f"✓ {name}: train {tr.shape}  eval {ev.shape}")
+    #print(f"✓ {name}: train {tr.shape}  eval {ev.shape}")
 
 def main():
     args = parse_args()
     random.seed(args.seed)
     files = [p for p in args.input.rglob("*") if p.is_file()]
-    print(f"Found {len(files)} files → 加载中…")
+    #print(f"Found {len(files)} files → 加载中…")
 
     groups: Dict[str, List[np.ndarray]] = {"img": [], "pts": [], "arr": []}
     for p in tqdm(files):
@@ -140,13 +140,13 @@ def main():
             g, arr = dispatcher(p)
             groups[g].append(arr)
         except Exception as e:
-            print(f"[skip] {p.name}: {e}")
+            #print(f"[skip] {p.name}: {e}")
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     for k in ("img", "pts", "arr"):
         split_and_save(groups[k], k, args.outdir, args.train_ratio)
 
-    print("全部完成，输出目录:", args.outdir.resolve())
+    #print("全部完成，输出目录:", args.outdir.resolve())
 
 if __name__ == "__main__":
     main()

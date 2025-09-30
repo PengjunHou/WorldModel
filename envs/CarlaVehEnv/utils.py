@@ -45,7 +45,7 @@ def init_detection_model(config, num_agent, com="lowerbound", ckpt_path=None, de
     if ckpt_path is not None and os.path.exists(ckpt_path):
         checkpoint = torch.load(ckpt_path, map_location="cpu")
         fafmodule.model.load_state_dict(checkpoint["model_state_dict"])
-        print(f"Loaded detection model from {ckpt_path}")
+        #print(f"Loaded detection model from {ckpt_path}")
 
     fafmodule.model.eval()
     return fafmodule, device
@@ -470,7 +470,7 @@ def overlay_confidence_maps(maps, alphas=None, title="Overlay of 5 vehicle confi
     else:
         plt.savefig(out_path, dpi=150)
         plt.close()
-        print(f"Saved overlay image to {out_path}")
+        #print(f"Saved overlay image to {out_path}")
 
 # # ---- Demo with synthetic data (replace with your actual 5 maps) ----
 # N, H, W = 5, 128, 128

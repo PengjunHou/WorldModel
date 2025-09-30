@@ -43,7 +43,7 @@ class VAE:
     def reconstruct(self, dataset, type, visul_num = 5):
         assert type in self.type, f"unsupported model type {type}"
         model = self.models[type]["model"]
-        print(f"dataset shape {dataset.shape}")
+        #print(f"dataset shape {dataset.shape}")
 
         length = len(dataset) 
         col = visul_num # math.ceil(length / 5.0)

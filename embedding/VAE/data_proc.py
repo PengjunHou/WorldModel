@@ -86,21 +86,21 @@ def write_split_npz_streaming(name: str, files: List[Path], loader_fn, outdir: P
                     shape_to_data[shape] = []
                 shape_to_data[shape].append(arr)
             except Exception as e:
-                print(f"[skip] {p.name}: {e}")
+                #print(f"[skip] {p.name}: {e}")
         return shape_to_data
 
     def save_grouped_npz(data_dict: dict, prefix: str):
         for shape, arrays in data_dict.items():
             shape_str = "x".join(map(str, shape))
             filename = outdir / f"{name}_{prefix}_{shape_str}.npz"
-            print(f"Saving {len(arrays)} samples with shape {shape} → {filename.name}")
+            #print(f"Saving {len(arrays)} samples with shape {shape} → {filename.name}")
             np.savez_compressed(filename, data=np.stack(arrays))
 
     train_data = group_by_shape(train_files)
     eval_data = group_by_shape(eval_files)
     save_grouped_npz(train_data, "train")
     save_grouped_npz(eval_data, "eval")
-    print(f"✓ {name}: train {len(train_files)}, eval {len(eval_files)}")
+    #print(f"✓ {name}: train {len(train_files)}, eval {len(eval_files)}")
 
 # ---------- 主函数 ---------- #
 def parse_args():
@@ -124,7 +124,7 @@ def main():
 
     file_groups = {"img": [], "pts": [], "arr": []}
 
-    print("分类中…")
+    #print("分类中…")
     for p in tqdm(all_files):
         if not p.is_file():
             continue
@@ -139,7 +139,7 @@ def main():
             _, loader_fn = get_loader(file_groups[k][0].suffix.lower())
             write_split_npz_streaming(k, file_groups[k], loader_fn, args.outdir, args.train_ratio)
 
-    print("✅ 全部完成:", args.outdir.resolve())
+    #print("✅ 全部完成:", args.outdir.resolve())
 
 if __name__ == "__main__":
     main()

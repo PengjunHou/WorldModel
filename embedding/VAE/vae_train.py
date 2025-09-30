@@ -108,7 +108,7 @@ ap.add_argument(
 
 args = ap.parse_args()
 
-print(args)
+#print(args)
 def main(args):
 
     if args.dataset == "v2x_sim_mini":
@@ -691,7 +691,7 @@ def main(args):
             decoder=Decoder_AE(model_config),
         )
 
-        print(model)
+        #print(model)
 
     logger.info(f"Successfully build {args.model_name.upper()} model !\n")
 

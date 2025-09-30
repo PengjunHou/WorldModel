@@ -135,11 +135,11 @@ class V2XSimReader:
             for vehicle_id in self.vehicle_ids:
                 for channel in self.channels:
                     if f'{channel}_id_{vehicle_id}' in sample['data']:
-                        # print(f"Found {channel} for vehicle {vehicle_id} in sample {sample_token}")
+                        # #print(f"Found {channel} for vehicle {vehicle_id} in sample {sample_token}")
                         sample_data = self.v2x_sim.get('sample_data', sample['data'][f'{channel}_id_{vehicle_id}'])
                         key_sensor_timestamp = (sample_data['calibrated_sensor_token'], sample_data['timestamp'])
                         self._idx_sd[key_sensor_timestamp] = sample_data
-                        # print(f"Sample data: {sample_data}")
+                        # #print(f"Sample data: {sample_data}")
 
             sample_token = sample['next']
 
@@ -218,16 +218,16 @@ class V2XSimReader:
                     veh_info[id][modality]['sensors'].append(token)
 
         # for rid, modalities in rsu_info.items():
-        #     print(f"RSU {rid}:")
+        #     #print(f"RSU {rid}:")
         #     for modality, data in modalities.items():
-        #         print(f"  {modality}: {data['count']} sensors")
-        #         print(f"    Tokens: {data['sensors']}")
+        #         #print(f"  {modality}: {data['count']} sensors")
+        #         #print(f"    Tokens: {data['sensors']}")
 
         # for vid, modalities in veh_info.items():
-        #     print(f"Vehicle {vid}:")
+        #     #print(f"Vehicle {vid}:")
         #     for modality, data in modalities.items():
-        #         print(f"  {modality}: {data['count']} sensors")
-        #         print(f"    Tokens: {data['sensors']}")
+        #         #print(f"  {modality}: {data['count']} sensors")
+        #         #print(f"    Tokens: {data['sensors']}")
 
         return rsu_info, veh_info
         
@@ -251,9 +251,9 @@ class V2XSimReader:
 
         data = {}
         for modality, info in sensors.items():
-            # print(f"Modality: {modality}")
-            # print(f"Sensor count: {info['count']}")
-            # print(f"Sensor tokens: {info['sensors']}")
+            # #print(f"Modality: {modality}")
+            # #print(f"Sensor count: {info['count']}")
+            # #print(f"Sensor tokens: {info['sensors']}")
             for sensor_token in info['sensors']:
                 calibrated_sensor_token = self.sensor_to_calibrated_sensor.get(sensor_token)
                 timestamp = self.start_timestamp + time_step
@@ -262,10 +262,10 @@ class V2XSimReader:
 
                 data[sensor_token] = sample_data
         
-        # print(f"Agent {agent_id} sensor data at time step {time_step}:")
+        # #print(f"Agent {agent_id} sensor data at time step {time_step}:")
         # for sensor_token, sample_data in data.items():
-        #     print(f"  Sensor token: {sensor_token}")
-        #     print(f"    Sample data: {sample_data}")
+        #     #print(f"  Sensor token: {sensor_token}")
+        #     #print(f"    Sample data: {sample_data}")
         
         return data
 
@@ -287,9 +287,9 @@ class V2XSimReader:
                 sample_data = self._idx_sd.get((temp_calibrated_sensor_token, timestamp))
                 assert sample_data is not None, f"Sample data not found for {temp_sensor_token} at {time_step}"
                 ego_pose_token = sample_data['ego_pose_token']
-                # print(f"ego_pose_token: {ego_pose_token}")
+                # #print(f"ego_pose_token: {ego_pose_token}")
                 ego_pose = self._idx_ego_pose.get(ego_pose_token)
-                # print(f"ego_pose: {ego_pose}")
+                # #print(f"ego_pose: {ego_pose}")
                 assert ego_pose is not None, f"Ego pose not found for {ego_pose_token}"
                 all_egpose_data.append(ego_pose)
 
@@ -302,21 +302,21 @@ class V2XSimReader:
             #     sample_data = self._idx_sd.get((temp_calibrated_sensor_token, timestamp))
             #     assert sample_data is not None, f"Sample data not found for {temp_sensor_token} at {time_step}"
             #     ego_pose_token = sample_data['ego_pose_token']
-            #     # print(f"ego_pose_token: {ego_pose_token}")
+            #     # #print(f"ego_pose_token: {ego_pose_token}")
             #     ego_pose = self._idx_ego_pose.get(ego_pose_token)
-            #     # print(f"ego_pose: {ego_pose}")
+            #     # #print(f"ego_pose: {ego_pose}")
             #     assert ego_pose is not None, f"Ego pose not found for {ego_pose_token}"
             #     all_egpose_data2.append(ego_pose)
             
             # # 验证同一辆车的ego_pose的rotation是否一致
             # for i in range(len(all_egpose_data)):
-            #     print(f"ego_pose1: {all_egpose_data[i]}")
-            #     print(f"ego_pose2: {all_egpose_data2[i]}")
+            #     #print(f"ego_pose1: {all_egpose_data[i]}")
+            #     #print(f"ego_pose2: {all_egpose_data2[i]}")
             #     assert all_egpose_data[i]['rotation'] == all_egpose_data2[i]['rotation'], f"Rotation mismatch at index {i} for vehicle {vid}"
 
 
             for rec in all_egpose_data:
-                # print(f"ego_pose: {rec}")
+                # #print(f"ego_pose: {rec}")
                 t = rec['timestamp']
                 pos = np.array(rec['translation'], dtype=float)
                 rotatoion = np.array(rec['rotation'], dtype=float)
@@ -340,9 +340,9 @@ class V2XSimReader:
 
             break
 
-        # print(f"Vehicle {vid} trajectory:")
+        # #print(f"Vehicle {vid} trajectory:")
         # for rec in trajectory:
-        #     print(f"  Timestamp: {rec['timestamp']}, Position: {rec['position']}, Velocity: {rec['velocity']}, Rotation: {rec['rotation']}")    
+        #     #print(f"  Timestamp: {rec['timestamp']}, Position: {rec['position']}, Velocity: {rec['velocity']}, Rotation: {rec['rotation']}")    
         
         return trajectory
 
@@ -388,9 +388,9 @@ class V2XSimReader:
             prev_pos = pos
             timestamp += 1
 
-        # print(f"Object {object_token} trajectory:")
+        # #print(f"Object {object_token} trajectory:")
         # for rec in trajectory:
-        #     print(f"  Timestamp: {rec['timestamp']}, Position: {rec['position']}, Velocity: {rec['velocity']}, Rotation: {rec['rotation']}")
+        #     #print(f"  Timestamp: {rec['timestamp']}, Position: {rec['position']}, Velocity: {rec['velocity']}, Rotation: {rec['rotation']}")
         return trajectory
          
     def get_object_data(self, object_token: str):
@@ -406,13 +406,13 @@ class V2XSimReader:
             annotation = self._idx_ann.get(first_annotation_token)
             # assert annotation is not None, f"Annotation {first_annotation_token} not found"
             if annotation == None:
-                print(f"token {object_token}, annotation {annotation} not found")
+                #print(f"token {object_token}, annotation {annotation} not found")
                 return data
             data.append(annotation)
             first_annotation_token = annotation['next']
 
-        # print(f"Last annotation: {annotation}")
-        # print(f"Data: {data}")
+        # #print(f"Last annotation: {annotation}")
+        # #print(f"Data: {data}")
 
         return data
     
@@ -501,7 +501,7 @@ class V2XSimReader:
         while sample_token != '' and sample_token is not None:
             sample = self.v2x_sim.get("sample", sample_token)
             next_sample_token = sample.get('next')
-            # print(f"Processing sample: {sample.keys()}")
+            # #print(f"Processing sample: {sample.keys()}")
             if sample is None:
                 continue
             for ann_token in sample['anns']:
@@ -512,7 +512,7 @@ class V2XSimReader:
                 rotation = ann['rotation']
                 size = ann['size']
                 min_xyz, max_xyz = self.get_cord_range(translation, rotation, size)
-                # print(f"Annotation {ann_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
+                # #print(f"Annotation {ann_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
 
                 area_extents[:, 0] = np.minimum(area_extents[:, 0], min_xyz)
                 area_extents[:, 1] = np.maximum(area_extents[:, 1], max_xyz)
@@ -527,24 +527,24 @@ class V2XSimReader:
                 ego_rotation = ego_pose['rotation']
                 ego_translation = ego_pose['translation']
                 min_xyz, max_xyz = self.get_cord_range(ego_translation, ego_rotation, [0.1, 0.1, 0.1])
-                # print(f"Calibrated sensor {calibrated_sensor_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
+                # #print(f"Calibrated sensor {calibrated_sensor_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
 
                 area_extents[:, 0] = np.minimum(area_extents[:, 0], min_xyz)
                 area_extents[:, 1] = np.maximum(area_extents[:, 1], max_xyz)
 
-            # print(f"Current area extents: {area_extents}")
+            # #print(f"Current area extents: {area_extents}")
                 
             sample_token = next_sample_token
 
-        print(f"Global map area extents: {area_extents}")
-        print(f"Global map voxel size: {voxel_size}")
+        #print(f"Global map area extents: {area_extents}")
+        #print(f"Global map voxel size: {voxel_size}")
         area_extents[:,0] = (np.floor(area_extents[:,0] / voxel_size)) * voxel_size
         area_extents[:,1] = (np.ceil(area_extents[:,1] / voxel_size)) * voxel_size
-        print(f"Adjusted area extents: {area_extents}")
+        #print(f"Adjusted area extents: {area_extents}")
 
         map_dims = np.ceil((area_extents[:, 1] - area_extents[:, 0]) / voxel_size)
         map_dims = map_dims.astype(int)
-        print(f"Global map dimensions: {map_dims}")
+        #print(f"Global map dimensions: {map_dims}")
         
         
         return area_extents, map_dims

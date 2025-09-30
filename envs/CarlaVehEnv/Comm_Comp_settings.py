@@ -109,10 +109,10 @@ class Comm_Comp_Base():
             #latecy_fn=self.get_latency
         )
 
-        # print(f"info: {info}")
+        # #print(f"info: {info}")
         # table, K_budget, K_max = info['table'], info['Kmax_budget'], info['Kmax_used']
-        # print(f"K_budget (frame UL capacity upper bound) = {K_budget}")
-        # print(f"Search K in [0, {K_max}] -> K* = {K_star}")
+        # #print(f"K_budget (frame UL capacity upper bound) = {K_budget}")
+        # #print(f"Search K in [0, {K_max}] -> K* = {K_star}")
         return K_star, info
 
 class Lower_Resource(Comm_Comp_Base):
@@ -137,10 +137,10 @@ if __name__ == "__main__":
 
     comm = Comm_Comp_Base(None)  # 20 MHz, 200ms 帧
     K_star, info  = comm.compute_k_star(N, U, lamba)
-    print(f"info: {info}")
+    #print(f"info: {info}")
     table, K_budget, K_max = info['table'], info['Kmax_budget'], info['Kmax_used']
-    print(f"K_budget (frame UL capacity upper bound) = {K_budget}")
-    print(f"Search K in [0, {K_max}] -> K* = {K_star}")
+    #print(f"K_budget (frame UL capacity upper bound) = {K_budget}")
+    #print(f"Search K in [0, {K_max}] -> K* = {K_star}")
 
     # 画 J(K) 与 ΔJ(K)
     # table = info["table"]                     # 你打印出来的那个 dict

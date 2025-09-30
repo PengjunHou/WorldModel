@@ -52,7 +52,7 @@ def master():
             local_maps, adj, fused_maps, prev_b, curr_b = env.wrapper_state(obs)   # 获取状态特征和邻接矩阵
             states_tuple = (local_maps, adj, fused_maps, prev_b, curr_b)
             max_k = curr_b[0][0]
-            print(f"current max time slices cnt {max_k.item()}, {type(max_k)}")
+            #print(f"current max time slices cnt {max_k.item()}, {type(max_k)}")
             score_map, action, logp, value = env.action_select(states_tuple, max_k=int(max_k.item()))
             obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated  # 判断是否结束
@@ -74,7 +74,7 @@ def master():
         env.sumary_writer.add_scalar('gae_mean', info['gae_mean'], it)
         env.sumary_writer.add_scalar('reward', total_rewards.item(), it)
 
-        print(f"Iter {it}: loss={info['loss']:.4f} policy={info['policy_loss']:.4f} value={info['value_loss']:.4f} ent={info['entropy']:.2f} KL={info['approx_kl']:.4f} gae_mean={info['gae_mean']:.4f} gae_std={info['gae_std']:.4f} gae_nonzero={info['gae_nonzero']:.4f} ratio_mean={info['ratio_mean']:.4f} ratio_std={info['ratio_std']:.4f} ratio_min={info['ratio_min']:.4f} ratio_max={info['ratio_max']:.4f} ratio_close1={info['ratio_close1']:.4f} alpha_beta_sum_mean={info['alpha_beta_sum_mean']:.4f}")
+        #print(f"Iter {it}: loss={info['loss']:.4f} policy={info['policy_loss']:.4f} value={info['value_loss']:.4f} ent={info['entropy']:.2f} KL={info['approx_kl']:.4f} gae_mean={info['gae_mean']:.4f} gae_std={info['gae_std']:.4f} gae_nonzero={info['gae_nonzero']:.4f} ratio_mean={info['ratio_mean']:.4f} ratio_std={info['ratio_std']:.4f} ratio_min={info['ratio_min']:.4f} ratio_max={info['ratio_max']:.4f} ratio_close1={info['ratio_close1']:.4f} alpha_beta_sum_mean={info['alpha_beta_sum_mean']:.4f}")
 
         if config_args.save_model:
             if info['gae_mean'] > best_model_reward:
@@ -82,10 +82,10 @@ def master():
                 best_model_reward = info['gae_mean']
             ckpt = save_checkpoint(env.RL_agent.model, env.RL_agent.opt, env.RL_agent.cfg, out_dir=config_args.model_checkpt,
                        step=it, is_best=is_best_model, extra={"train_info": info})
-            print("model saved: ", ckpt)
+            #print("model saved: ", ckpt)
 
 
-    print("Training loop finished.")
+    #print("Training loop finished.")
     env.sumary_writer.close()
 
 if __name__ == '__main__':
@@ -93,9 +93,9 @@ if __name__ == '__main__':
     args = PARSER.parse_args()
     level_str = "info"
     init_log(level_str)
-    print(args)
-    print(args.env_name)
-    print(args.seed)
+    #print(args)
+    #print(args.env_name)
+    #print(args.seed)
 
     # multi-processing
     # from mpi4py import MPI

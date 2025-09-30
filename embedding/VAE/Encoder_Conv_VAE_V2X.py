@@ -21,8 +21,8 @@ class Encoder_Conv_VAE_V2X(BaseEncoder):
         super().__init__()
 
         # 1. 基本属性
-        print(f"input dim {args.input_dim}")
-        print(f"lantet dim: {args.latent_dim}")
+        #print(f"input dim {args.input_dim}")
+        #print(f"lantet dim: {args.latent_dim}")
         self.input_dim   = args.input_dim            # (C, H, W)
         self.latent_dim  = args.latent_dim
         self.n_channels  = self.input_dim[0]
