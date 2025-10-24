@@ -21,7 +21,7 @@ PARSER.add('--Comm_Comp_model', required = True, type = str, default = 'Base', h
 
 PARSER.add('--time_steps', required = True, type = int, help = 'number of time steps')
 PARSER.add('--strategy', required = True, type = str, help = 'action selection strategy')
-PARSER.add('--RL_model', required = True, type = str, help = 'RL_model')
+PARSER.add('--RL_model', required = False, type = str, help = 'RL_model')
 PARSER.add('--obs_dim', required = False, type = int, help = 'observation dimension')
 PARSER.add('--action_dim', required = False, type = int, help = 'action dimension')
 PARSER.add('--epoch', required = True, type = int, default = 100, help = "number of epoch")

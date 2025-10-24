@@ -94,9 +94,6 @@ class Car():
         self.local_conf_map = np.zeros((self.dataset.map_dims[0], self.dataset.map_dims[1]), dtype=np.float32)
         state = {'vid': self.vid, 'time_step': time_step}
 
-        # self.last_slices_cnt = self.current_slices_limits
-        # self.current_slices_limits = theory_K_star #self.comm_comp_model.compute_k_star(self.config.num_vehicles, self.dataset.map_dims[0] * self.dataset.map_dims[1], lamba=IoU)
-
         objects_local, scores, trans_matrix = self.run_detection(time_step, det_method="points count", visualize = self.visualize)  # 使用点云数量检测
 
         device = self.device
@@ -109,24 +106,6 @@ class Car():
 
         # 尝试变换到世界系（两条路：优先NuScenes位姿，退路用trans_matrix）
         objects_world = None
-
-        # # 4.1 优先：NuScenes位姿（如果你类里有 self.dataset / self.nusc 可获得 sample_data 的 tokens）
-        # try:
-        #     sensors_data = self.dataset.get_agent_sensor_files(self.vid, time_step)
-        #     lidar_sd = None
-        #     for _, sd in sensors_data.items():
-        #         if sd['channel'].split('_id_')[0] == self.sensor_channel:
-        #             lidar_sd = sd
-        #             break
-        #     if lidar_sd and 'ego_pose_token' in lidar_sd and 'calibrated_sensor_token' in lidar_sd:
-        #         pose = self.v2x_sim.get("ego_pose", lidar_sd['ego_pose_token'])
-        #         cs   = self.v2x_sim.get("calibrated_sensor", lidar_sd['calibrated_sensor_token'])
-        #         T_world_ego  = transform_matrix(pose['translation'], Quaternion(pose['rotation']))
-        #         T_ego_sensor = transform_matrix(cs['translation'],   Quaternion(cs['rotation']))
-        #         T_world_sensor = T_world_ego @ T_ego_sensor
-        #         objects_world = bev_local_to_world_corners(T_world_sensor, objects_local)
-        # except Exception:
-        #     pass
 
         # 4.2 退路：用 trans_matrix（很多版本就是本地->世界的4x4）
         if objects_world is None:
@@ -186,50 +165,6 @@ class Car():
             plt.imshow(np.max(padded_voxel_points.reshape(256, 256, 13), axis=2), alpha=1.0, zorder=12)
             img_file = os.path.join(self.results_path, f"voxel_map_t{time_step:03d}.png")
             plt.savefig(img_file)
-
-        # 构造 data，与 test_codet.py 保持一致
-        # data = {
-        #     "bev_seq": padded_voxel_points.unsqueeze(0).to(device),
-        #     "labels": torch.zeros_like(reg_target).unsqueeze(0).to(device),  # dummy
-        #     "reg_targets": reg_target.unsqueeze(0).to(device),
-        #     "anchors": anchors_map.unsqueeze(0).to(device),
-        #     "vis_maps": vis_maps.unsqueeze(0).to(device),
-        #     "reg_loss_mask": reg_loss_mask.unsqueeze(0).to(device).type(dtype=torch.bool),
-        #     "target_agent_ids": torch.tensor([[target_agent_id]]).to(device),
-        #     "num_agent": torch.tensor([[num_agent]]).to(device),
-        #     "trans_matrices": trans_matrix.unsqueeze(0).to(device),
-        # }
-
-        # # 调用推理
-        # if flag == "lowerbound_box_com":
-        #     loss, cls_loss, loc_loss, result = fafmodule.predict_all_with_box_com(
-        #         data, data["trans_matrices"], validation=False
-        #     )
-        # else:
-        #     result = fafmodule.predict_all(
-        #         data, 1, validation=False, num_agent = 1
-        #     )
-
-        # LOG.info(f"Detection result for agent {target_agent_id}: {result}")
-        # # 解析结果
-        # scores, boxes = [], []
-
-        # if isinstance(result, list) and len(result) > 0:
-        #     # result[0] 是一个 tuple (detections, some_tensor)
-        #     detections, _ = result[0]
-
-        #     if isinstance(detections, list) and len(detections) > 0:
-        #         agent_detections = detections[0]  # [[{...}]]
-        #         if len(agent_detections) > 0:
-        #             pred_dict = agent_detections[0]  # {'pred': ..., 'score': ..., ...}
-
-        #             if "score" in pred_dict and "pred" in pred_dict:
-        #                 scores = pred_dict["score"]
-        #                 if torch.is_tensor(scores):
-        #                     scores = scores.detach().cpu().numpy()
-        #                 boxes = pred_dict["pred"]
-        #                 if torch.is_tensor(boxes):
-        #                     boxes = boxes.detach().cpu().numpy()
 
         if det_method == "random":
             objects_local = []  # 模拟数据
@@ -376,15 +311,6 @@ class Clusters():
         LOG.info(f"pre_Iou : {pre_Iou}")
 
         LOG.debug(f"members: f{self.members}")
-
-    # def add_member(self, member):
-    #     self.members.append(member)
-
-    # def remove_member(self, member):
-    #     if member in self.members:
-    #         self.members.remove(member)
-    #     else:
-    #         raise ValueError("Member not found in the cluster")
     
     def get_members(self):
         return self.members

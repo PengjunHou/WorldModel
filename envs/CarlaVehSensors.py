@@ -18,6 +18,7 @@ from controller.DPPO_agent import DPPO
 from controller.model.diffusion_ppo import PPODiffusion
 from controller.cfg.dppo_cfg import DPPOConfig
 from torch.utils.tensorboard import SummaryWriter
+import matplotlib.animation as animation
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class CarlaEnv(gym.Env):
 
         self.dataset = V2XSimReader(self.data_path)
         self.det_model, _ = init_detection_model(self.V2X_config, num_agent=config.num_vehicles, com="lowerbound", ckpt_path=None, device=None)
+        # statistic data
+        self.statistic = {}
 
         self._setup_simulation()
 
@@ -56,6 +59,7 @@ class CarlaEnv(gym.Env):
         # self.PPO_agent = PPOAgent(
         #     input_dim=obs_dim, hidden_dim=config.hidden_dim, num_areas=self.n_vehicles,
         #     lr=config.lr, gamma=config.gamma, eps_clip=config.eps_clip)
+        self.RL_device = "cuda" if torch.cuda.is_available() else "cpu"
         if config.strategy == "RL" and config.RL_model == "PPO":
             self.RL_cfg = ModelConfig(H = self.dataset.map_dims[0], W = self.dataset.map_dims[1], num_vehicles=self.n_vehicles, patch_h = self.dataset.map_dims[0], patch_w = self.dataset.map_dims[1])
             self.RL_device = self.RL_cfg.device
@@ -215,6 +219,11 @@ class CarlaEnv(gym.Env):
             cluster_obs.append(self.clusters[i].get_state(time_step))
 
         obs = cluster_obs  # 可替换为 self._combine_states(cluster_states, object_states)
+
+        cur_time_local_maps = []
+        for veh_i in range(len(self.clusters[0].members)):
+            cur_time_local_maps.append(np.copy(self.clusters[0].members[veh_i + 1].local_conf_map))
+        self.statistic.setdefault("local_map", []).append(cur_time_local_maps)
 
         return obs
     
@@ -423,10 +432,12 @@ class CarlaEnv(gym.Env):
         # alpha, beta, value = out["alpha"], out["beta"], out["value"]  # [B,P,Q], [B]
         # dist = Beta(alpha, beta)
         # scores_map = dist.rsample().clamp(1e-6, 1-1e-6)               # [B,P,Q]
-        # logp = dist.log_prob(scores_map).sum(dim=(1, 2))            
-        scores_map, logp, value = self.RL_agent.action_select(states_tuple)
-
+        # logp = dist.log_prob(scores_map).sum(dim=(1, 2))  
         B, N, C, H, W = local_maps.shape
+        if self.config.strategy == 'RL' :       
+            scores_map, logp, value = self.RL_agent.action_select(states_tuple)
+        else:
+            scores_map, logp, value = torch.zeros((1, H, W)), torch.zeros((1, H, W)), torch.zeros((1, H, W))
         _, P, Q = scores_map.shape
         randv = np.random.rand()
         if collection_policy:

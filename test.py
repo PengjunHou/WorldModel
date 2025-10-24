@@ -5,6 +5,7 @@ from evaluation import *
 
 import matplotlib.pyplot as plt
 import matplotlib
+import matplotlib.animation as animation
 import numpy as np
 import os, sys, csv
 import copy
@@ -35,13 +36,13 @@ def master():
     plt.close('all')
     env = make_env(args=config_args, dream_env=False, render_mode=False)
 
-    assert config_args.load_model == 1, f"load model setting false"
-    state = load_checkpoint(env.RL_agent.model, env.RL_agent.opt,
-                    ckpt_path=config_args.model_checkpt,   # 目录即可，会取 latest.pt
-                    resume_rng=True,
-                    dataclass_type=ModelConfig)  # 返回 dataclass
-    loaded_cfg = state["cfg"]  # 可能是 ModelConfig 或 dict
-    env.RL_agent.model.eval()
+    # assert config_args.load_model == 1, f"load model setting false"
+    # state = load_checkpoint(env.RL_agent.model, env.RL_agent.opt,
+    #                 ckpt_path=config_args.model_checkpt,   # 目录即可，会取 latest.pt
+    #                 resume_rng=True,
+    #                 dataclass_type=ModelConfig)  # 返回 dataclass
+    # loaded_cfg = state["cfg"]  # 可能是 ModelConfig 或 dict
+    # env.RL_agent.model.eval()
 
     evaluation_maps = []
     obs, info = env.reset()  
@@ -63,6 +64,37 @@ def master():
             evaluation_maps.append(copy.deepcopy(obs))
 
     plt.close('all')
+    stat_local_maps = np.array(env.statistic['local_map'])
+    print(f"statistic shape: {stat_local_maps.shape}")
+    mean_maps = np.mean(stat_local_maps, axis=1)
+    var_maps = np.var(stat_local_maps, axis=1)
+
+    fig, axs = plt.subplots(1, 2, figsize=(8, 4))
+
+    def update(t):
+        axs[0].cla()
+        axs[1].cla()
+        im0 = axs[0].imshow(mean_maps[t], cmap='viridis', vmin=0, vmax=1)
+        axs[0].set_title(f"Mean (Step {t})")
+        im1 = axs[1].imshow(var_maps[t], cmap='magma', vmin=0, vmax=np.max(var_maps))
+        axs[1].set_title(f"Variance (Step {t})")
+        return im0, im1
+
+    ani = animation.FuncAnimation(fig, update, frames=config_args.time_steps, interval=500, blit=False)
+
+    ani.save("conf_map_mean_var.gif", writer="pillow")
+
+    records = []
+    for t in range(mean_maps.shape[0]):
+        for i in range(mean_maps.shape[1]):
+            for j in range(mean_maps.shape[2]):
+                records.append([t, i, j, mean_maps[t, i, j], var_maps[t, i, j]])
+
+    df = pd.DataFrame(records, columns=["time", "row", "col", "mean", "var"])
+
+    csv_path = "conf_map_stats.csv"
+    df.to_csv(csv_path, index=False)
+
     return evaluation_maps
 
 
@@ -80,12 +112,13 @@ if __name__ == '__main__':
     # if "parent" == mpi_fork(args.controller_num_worker+1): os.exit()
 
     # main(args)
-    strategies = ['Single', 'Random', 'RL', 'Greedy']
-    # for strategy in strategies:
-    #     args.strategy = strategy
-    #     evaluation_maps = main(args)
-    #     get_perf_strategy(config_args, evaluation_maps, -1, config_args.strategy, out_path=None)
+    # strategies = ['Single', 'Random', 'RL', 'Greedy']
+    strategies = ['Random']
+    for strategy in strategies:
+        args.strategy = strategy
+        evaluation_maps = main(args)
+        # get_perf_strategy(config_args, evaluation_maps, -1, config_args.strategy, out_path=None)
 
-    root_path = os.path.join(args.result_path, "evaluation")
-    out_path = os.path.join(args.result_path, "evaluation", f"eval_benchmark_at_time")
-    eval_banchmark_at_time(args, root_path=root_path, strategies=strategies, K = -1, out_path=out_path)
+    # root_path = os.path.join(args.result_path, "evaluation")
+    # out_path = os.path.join(args.result_path, "evaluation", f"eval_benchmark_at_time")
+    # eval_banchmark_at_time(args, root_path=root_path, strategies=strategies, K = -1, out_path=out_path)
