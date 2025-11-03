@@ -30,6 +30,9 @@ PARSER.add('--save_model', required = True, type = int, default = 1, help = "ena
 PARSER.add('--load_model', required = True, type = int, default = 0, help = "enable load RL model")
 PARSER.add('--bc_steps', required = False, type = int, default = 100, help = "number of behavior cloning steps")
 PARSER.add('--bc_samples', required = False, type = int, default = 1000, help = "number of behavior cloning samples")
+PARSER.add('--seqs_len', required = False, type = int, default = 5, help = "sequence length for RNN/LSTM models")
+PARSER.add('--TOP_K', required = False, type = int, default = 10, help = "top-k selection for communication")
+
 
 def init_log(level_str):
     ## --------------- 日志的处理 -------------------

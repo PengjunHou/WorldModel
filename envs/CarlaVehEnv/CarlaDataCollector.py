@@ -47,7 +47,7 @@ class V2XSimReader:
         self.scene = self.v2x_sim.scene[0]
         self.first_sample_token = self.scene.get("first_sample_token")
         self.last_sample_token = self.scene.get("last_sample_token")
-        self.channels = ['LIDAR_TOP']
+        self.channels = ['CAM_FRONT']
                         # ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT', 'DEP_FRONT']
                         #  'DEP_FRONT_LEFT', 'DEP_FRONT_RIGHT', 'DEP_BACK', 'DEP_BACK_LEFT', 'DEP_BACK_RIGHT', 'BEV_TOP', 'SEG_FRONT', \
                         #  'SEG_FRONT_RIGHT', 'SEG_FRONT_LEFT', 'SEG_BACK', 'SEG_BACK_LEFT', 'SEG_BACK_RIGHT', 'LIDAR_TOP', 'SEMLIDAR_TOP', \
@@ -76,8 +76,8 @@ class V2XSimReader:
         self._build_indices()
 
         # build global map
-        self.voxel_size = (10, 10, 0.4)  # 体素大小
-        self.area_extents, self.map_dims = self.init_global_map(self.voxel_size)
+        # self.voxel_size = (4, 4, 0.4)  # 体素大小
+        self.init_global_map()
 
     def _preprocess(self):
         """
@@ -268,6 +268,46 @@ class V2XSimReader:
         #     #print(f"    Sample data: {sample_data}")
         
         return data
+    
+    def get_vehicles_at_time(self, time_step):
+        """
+        time_step: 时间步
+        return: vehicles_info: {  
+            agent_id:  {
+                'image': image_path,
+                'camera_params': camera_params,
+                'ego_params': ego_params
+            },
+            }
+        """
+        vehicles_info = {}
+        for agent_id in self.vehicle_ids:
+            vehicle_info = {}
+            sensor_data = self.get_agent_sensor_files(agent_id, time_step)
+            for sensor_token, sample_data in sensor_data.items():
+                channel = self._idx_channel.get(sensor_token)
+                if channel.startswith('CAM_'):
+                    # print(f"check path for agent {agent_id} at time step {time_step}, channel: {channel}, filename: {sample_data['filename']}   ")
+                    image_path = os.path.join(self.root, sample_data['filename'])
+                    calibrated_sensor = self.v2x_sim.get('calibrated_sensor', sample_data['calibrated_sensor_token'])
+                    camera_params = {
+                        'translation': calibrated_sensor['translation'],
+                        'rotation': calibrated_sensor['rotation'],
+                        'camera_intrinsic': calibrated_sensor['camera_intrinsic']
+                    }
+                    ego_pose_token = sample_data['ego_pose_token']
+                    ego_pose = self.v2x_sim.get('ego_pose', ego_pose_token)
+                    ego_params = {
+                        'translation': ego_pose['translation'],
+                        'rotation': ego_pose['rotation']
+                    }
+                    vehicle_info['agent_id'] = agent_id
+                    vehicle_info['image'] = image_path
+                    vehicle_info['camera_params'] = camera_params
+                    vehicle_info['ego_params'] = ego_params
+            vehicles_info[agent_id] = vehicle_info
+        return vehicles_info
+
 
     def get_vehicle_metadata(self, vid):
         """
@@ -496,58 +536,66 @@ class V2XSimReader:
         self.voxel_size = (0.25, 0.25, 0.4)
         self.area_extents = np.array([[-96.0, 96.0], [-96.0, 96.0], [-4.0, 4.0]])
         """
-        area_extents = np.array([[np.inf, -np.inf], [np.inf, -np.inf], [np.inf, -np.inf]])
-        sample_token = self.first_sample_token
-        while sample_token != '' and sample_token is not None:
-            sample = self.v2x_sim.get("sample", sample_token)
-            next_sample_token = sample.get('next')
-            # #print(f"Processing sample: {sample.keys()}")
-            if sample is None:
-                continue
-            for ann_token in sample['anns']:
-                ann = self.v2x_sim.get("sample_annotation", ann_token)
-                if ann is None:
-                    continue
-                translation = ann['translation']
-                rotation = ann['rotation']
-                size = ann['size']
-                min_xyz, max_xyz = self.get_cord_range(translation, rotation, size)
-                # #print(f"Annotation {ann_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
+        # area_extents = np.array([[np.inf, -np.inf], [np.inf, -np.inf], [np.inf, -np.inf]])
+        # sample_token = self.first_sample_token
+        # while sample_token != '' and sample_token is not None:
+        #     sample = self.v2x_sim.get("sample", sample_token)
+        #     next_sample_token = sample.get('next')
+        #     # #print(f"Processing sample: {sample.keys()}")
+        #     if sample is None:
+        #         continue
+        #     for ann_token in sample['anns']:
+        #         ann = self.v2x_sim.get("sample_annotation", ann_token)
+        #         if ann is None:
+        #             continue
+        #         translation = ann['translation']
+        #         rotation = ann['rotation']
+        #         size = ann['size']
+        #         min_xyz, max_xyz = self.get_cord_range(translation, rotation, size)
+        #         # #print(f"Annotation {ann_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
 
-                area_extents[:, 0] = np.minimum(area_extents[:, 0], min_xyz)
-                area_extents[:, 1] = np.maximum(area_extents[:, 1], max_xyz)
+        #         area_extents[:, 0] = np.minimum(area_extents[:, 0], min_xyz)
+        #         area_extents[:, 1] = np.maximum(area_extents[:, 1], max_xyz)
             
-            for sample_data_token in sample['data'].values():
-                sample_data = self.v2x_sim.get("sample_data", sample_data_token)
-                if sample_data is None:
-                    continue
+        #     for sample_data_token in sample['data'].values():
+        #         sample_data = self.v2x_sim.get("sample_data", sample_data_token)
+        #         if sample_data is None:
+        #             continue
 
-                ego_pose_token = sample_data['ego_pose_token']
-                ego_pose = self.v2x_sim.get("ego_pose", ego_pose_token)
-                ego_rotation = ego_pose['rotation']
-                ego_translation = ego_pose['translation']
-                min_xyz, max_xyz = self.get_cord_range(ego_translation, ego_rotation, [0.1, 0.1, 0.1])
-                # #print(f"Calibrated sensor {calibrated_sensor_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
+        #         ego_pose_token = sample_data['ego_pose_token']
+        #         ego_pose = self.v2x_sim.get("ego_pose", ego_pose_token)
+        #         ego_rotation = ego_pose['rotation']
+        #         ego_translation = ego_pose['translation']
+        #         min_xyz, max_xyz = self.get_cord_range(ego_translation, ego_rotation, [0.1, 0.1, 0.1])
+        #         # #print(f"Calibrated sensor {calibrated_sensor_token} min_xyz: {min_xyz}, max_xyz: {max_xyz}")
 
-                area_extents[:, 0] = np.minimum(area_extents[:, 0], min_xyz)
-                area_extents[:, 1] = np.maximum(area_extents[:, 1], max_xyz)
+        #         area_extents[:, 0] = np.minimum(area_extents[:, 0], min_xyz)
+        #         area_extents[:, 1] = np.maximum(area_extents[:, 1], max_xyz)
 
-            # #print(f"Current area extents: {area_extents}")
+        #     # #print(f"Current area extents: {area_extents}")
                 
-            sample_token = next_sample_token
+        #     sample_token = next_sample_token
 
-        #print(f"Global map area extents: {area_extents}")
-        #print(f"Global map voxel size: {voxel_size}")
-        area_extents[:,0] = (np.floor(area_extents[:,0] / voxel_size)) * voxel_size
-        area_extents[:,1] = (np.ceil(area_extents[:,1] / voxel_size)) * voxel_size
-        #print(f"Adjusted area extents: {area_extents}")
+        # #print(f"Global map area extents: {area_extents}")
+        # #print(f"Global map voxel size: {voxel_size}")
+        # area_extents[:,0] = (np.floor(area_extents[:,0] / voxel_size)) * voxel_size
+        # area_extents[:,1] = (np.ceil(area_extents[:,1] / voxel_size)) * voxel_size
+        # #print(f"Adjusted area extents: {area_extents}")
 
-        map_dims = np.ceil((area_extents[:, 1] - area_extents[:, 0]) / voxel_size)
-        map_dims = map_dims.astype(int)
-        #print(f"Global map dimensions: {map_dims}")
-        
-        
-        return area_extents, map_dims
+        # map_dims = np.ceil((area_extents[:, 1] - area_extents[:, 0]) / voxel_size)
+        # map_dims = map_dims.astype(int)
+        # #print(f"Global map dimensions: {map_dims}")
+        self.global_bev_config = {
+            'area_extents': [[-256, 256], [-256, 256]],  # 覆盖256m x 256m区域
+            'voxel_size': [4, 4],                       # 每个网格16m x 16m
+            'grid_size': [128, 128]                  # 128x128网格
+        }
+
+        self.local_bev_config = {
+            'area_extents': [[-32, 32], [-32, 32]],  
+            'voxel_size': [4, 4],              
+            'grid_size': [16, 16]                  
+        }
     
     def boxes_to_conf_map(self, conf_map, boxes_world, scores, agg="max"):
         """

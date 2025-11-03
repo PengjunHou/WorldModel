@@ -11,14 +11,13 @@ from envs.CarlaVehEnv.Object import Object
 from envs.CarlaVehEnv.CarlaDataCollector import V2XSimReader
 from envs.CarlaVehEnv.RSU import RSU
 from envs.CarlaVehEnv.utils import init_detection_model, topk_2d
-from coperception.datasets import V2XSimDet
-from coperception.configs import Config, ConfigGlobal
 from controller.PPO import ModelConfig, ActorCritic, PPO
 from controller.DPPO_agent import DPPO
 from controller.model.diffusion_ppo import PPODiffusion
 from controller.cfg.dppo_cfg import DPPOConfig
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.animation as animation
+from src.det.FastCNNDet import FasterRCNNDetector
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -34,24 +33,11 @@ class CarlaEnv(gym.Env):
         ## Configuration
         self.config = config
         self.data_path = config.data_path
-        self.V2X_config = Config("train", binary=True, only_det=True)
-        self.V2X_config_global = ConfigGlobal("train", binary=True, only_det=True)
         self.visualize = config.visualize
-
-        split = 'train'
-        agent_data_dirs = []
-        for agent_id in range(config.num_vehicles):
-            agent_data_dirs.append(os.path.join(self.config.v2x_data_path, split, f"agent{agent_id+1}"))
-        self.v2x_det_dataset = V2XSimDet(
-            dataset_roots=agent_data_dirs, split=split, config_global=self.V2X_config_global,
-            config=self.V2X_config , val=True, bound='both')
-        LOG.info(f"v2x_det_dataset length: {len(self.v2x_det_dataset)}")
-        LOG.info(f"v2x_det_dataset: {self.v2x_det_dataset}")
-
         self.dataset = V2XSimReader(self.data_path)
-        self.det_model, _ = init_detection_model(self.V2X_config, num_agent=config.num_vehicles, com="lowerbound", ckpt_path=None, device=None)
         # statistic data
         self.statistic = {}
+        self.detector = FasterRCNNDetector
 
         self._setup_simulation()
 
@@ -103,9 +89,23 @@ class CarlaEnv(gym.Env):
             self.clusters.append(cluster)
 
     def create_maps(self):
-        self.global_map_height = self.dataset.map_dims[0]
-        self.global_map_width = self.dataset.map_dims[1]
-        self.global_conf_map = np.zeros((self.global_map_height, self.global_map_width))
+        # self.global_map_height = self.dataset.map_dims[0]
+        # self.global_map_width = self.dataset.map_dims[1]
+        # self.global_conf_map = np.zeros((self.global_map_height, self.global_map_width))
+        # self.global_bev_config = {
+        #     'area_extents': [[-256, 256], [-256, 256]],  # 覆盖256m x 256m区域
+        #     'voxel_size': [4, 4],                       # 每个网格16m x 16m
+        #     'grid_size': [128, 128]                  # 128x128网格
+        # }
+
+        # self.local_bev_config = {
+        #     'area_extents': [[-32, 32], [-32, 32]],  
+        #     'voxel_size': [4, 4],              
+        #     'grid_size': [16, 16]                  
+        # }
+
+        pass
+  
 
     def create_cars(self):
         self.n_vehicles = self.dataset.get_vehicle_count()
@@ -115,7 +115,7 @@ class CarlaEnv(gym.Env):
         assert self.n_vehicles == len(veh_sensors), "Number of vehicles and sensors do not match"
 
         for vid, sensor_info in veh_sensors.items():
-            car = Car(vid, dataset=self.dataset, V2X_dataset = self.v2x_det_dataset, config = self.config,  det_model = self.det_model)
+            car = Car(vid, dataset=self.dataset, config = self.config, detector=self.detector)
             self.cars[vid] = car
         LOG.info(f"create cars finish! Number of cars : {self.n_vehicles}")
 
@@ -152,7 +152,43 @@ class CarlaEnv(gym.Env):
         info = {}
         return obs, info  # gymnasium 格式
 
+    def wrapper_action(self, action):
+        """
+        输入:
+        action: np.ndarray 或 torch.Tensor, 形状 [N_v, H, W], 每辆车在自己local map上的选择，0-1矩阵
+        返回:
+        dict {vehicle_id: [(p, q, score), ...]}
+        """
+        if isinstance(action, torch.Tensor):
+            action = action.cpu().numpy()
+        N_v, H, W = action.shape
+        max_k = self.config.TOP_K
+
+        actions = {}
+        for vid in range(1, N_v + 1):
+            score_map = action[vid - 1]  # [H, W]
+            flat = score_map.flatten()   # [H*W]
+            k = max(0, min(max_k, H * W))   #  k 不超过网格大小
+            if k == 0:
+                actions[vid] = []
+                continue
+            topk_idx = np.argpartition(-flat, k)[:k]  # 前k个索引，未排序
+            topk_idx_sorted = topk_idx[np.argsort(-flat[topk_idx])]  # 按值排序
+            action_list = []
+            for idx in topk_idx_sorted:
+                row = idx // W
+                col = idx % W
+                score = flat[idx]   # 这里score应该是confidence value，不是score
+                conf_v = self.cars[vid].local_conf_map[row, col]
+                action_list.append((col, row, conf_v))
+            actions[vid] = action_list
+
+        return actions
+
     def step(self, action):
+        '''
+        输入:action： [N_v, H, W] 每辆车在自己local map上的选择，0-1矩阵
+        '''
         if not self.Iou_pre_done:
             self.IoU_per_step.append(self.clusters[0].IoU)
             K_star = self.clusters[0].K_star_value
@@ -161,8 +197,11 @@ class CarlaEnv(gym.Env):
 
         next_time_step = self.cur_time_step + 1
 
+        # 这里需要封装成环境中需要的action格式
+        # action： dict {vehicle_id: [(p, q, score), ...]}
+        wrapped_action = self.wrapper_action(action)
         for cluster in self.clusters: # TODO，there is only one cluster now
-            cluster.step(next_time_step, action)
+            cluster.step(next_time_step, wrapped_action)
 
         if next_time_step >= self.time_step_length:
             terminated, truncated = True, False
@@ -182,12 +221,11 @@ class CarlaEnv(gym.Env):
         reward = self._compute_reward()
         info = {}
 
-        LOG.info(f"Time step {self.cur_time_step}, action {action}, reward {reward}, terminated {terminated}, truncated {truncated}, info {info}")
+        LOG.info(f"Time step {self.cur_time_step}, action {wrapped_action}, reward {reward}, terminated {terminated}, truncated {truncated}, info {info}")
         self.cur_time_step = next_time_step
-        reward = torch.tensor([reward], dtype=torch.float32, device=self.RL_device)
-        terminated = torch.tensor([terminated], dtype=torch.int8, device=self.RL_device)
+        # reward = torch.tensor([reward], dtype=torch.float32, device=self.RL_device)
+        # terminated = torch.tensor([terminated], dtype=torch.int8, device=self.RL_device)
 
-        LOG.info(f"shapes -  reward: {reward.shape}, terminated: {terminated.shape}")
         # LOG.info(f"Step {self.cur_time_step}: obs={obs}, reward={reward.item()}, terminated={terminated.item()}, truncated={truncated}")
 
         return obs, reward, terminated, truncated, info
@@ -209,163 +247,77 @@ class CarlaEnv(gym.Env):
         return np.any(overlap_area), overlap_degree
 
     def _get_observation(self, time_step):
-        # 获取当前时间步每个Agent的local confidence map
-        # 将其映射到Global map上
-        cluster_obs = []
-        # object_states = []
-        # for oid, obj in self.objects.items():
-        #     object_states.append(obj.get_state(time_step))
-        for i in range(self.n_clusters):
-            cluster_obs.append(self.clusters[i].get_state(time_step))
+        # 获取当前时间步state
+        #   每个Agent，前T个时间步（包含当前时间步）的local confidence map，（single perception， N_v, T, H_l, W_l）
+        #   每个Agent，前T个时间步（包含当前时间步）的last fused confidence map，（cooperative perception， actually used, N_v, T, H, W）
+        #   每个Agent，前T个时间步（包含当前时间步）的position, N_v, T, 3
+        #   每个区域，前T个时间步（包含当前时间步）的感兴趣的车辆数, N_a, T, H_g, W_g
+        
 
-        obs = cluster_obs  # 可替换为 self._combine_states(cluster_states, object_states)
+        # for i in range(self.n_clusters):
+        # OBS = {
+        #     'local_maps': local_maps,
+        #     'fused_maps': fused_maps,
+        #     'positions': positions,
+        #     'fused_bev_confidence': fused_bev_confidence,
+        #     'interest_maps': interest_maps
+        # }
+        obs = self.clusters[0].get_state(time_step)
 
-        cur_time_local_maps = []
-        for veh_i in range(len(self.clusters[0].members)):
-            cur_time_local_maps.append(np.copy(self.clusters[0].members[veh_i + 1].local_conf_map))
-        self.statistic.setdefault("local_map", []).append(cur_time_local_maps)
+        # obs = {
+        #     'local_map': np.array(local_maps),          # [N_c, T, H_l, W_l]
+        #     'fused_map': np.array(fused_maps),          # [N_c, T, H, W]
+        #     'positions': np.array(positions),           # [N_c, T, 2]
+        #     'interest_map': np.array(interest_maps)     # [T, H, W]
+        # }  # 可替换为 self._combine_states(cluster_states, object_states)
+
+        self.statistic.setdefault("local_map", []).append(obs["local_maps"])
 
         return obs
     
     def wrapper_state(self, obs, B: int = 1):
         """
-        将 obs 转成带批维的状态表示以适配 PPO：
-        - 若 obs 是单环境结构（原来的样子），则把该状态广播成 B 份；
-        - 若 obs 是长度为 B 的列表/元组（多环境），则逐个处理后堆叠。
         返回:
-        maps_b: [B, N, 1, H, W] (float32)
-        adj_b : [B, N, N]       (float32)
-        约定:
-        单环境时 obs[0] 是 {vid: agent_obs}，并且 agent_obs["local_map"] 为 [H, W]。
-        多环境时 obs 是长度为 B 的列表，其中每个元素都满足单环境结构。
+        local_maps: [N_v, T, H, W] (float32)
+        fused_maps: [N_v, T, H, W] (float32)
+        adjacency_matrix: [T, N_v, N_v] (float32)
+        positions: [N_v, T, 2]   (float32)
+        interest_maps: [T, H_g, W_g]  (float32)
         """
-        def _process_single(single_obs):
-            N = self.n_vehicles
-            sample = next(iter(single_obs.values()))
-            H, W = sample["local_map"].shape
+        T = 1
+        N_v = self.n_vehicles
+        local_maps = []
+        fused_maps = []
+        positions = []
+        interest_maps = []
+        for vid, car in self.cars.items():
+            local_map_seq = car.local_map_seqs[-T:]  # 最近T个时间步
+            fused_map_seq = car.fused_map_seqs[-T:]  # 最近T个时间步
+            position_seq = car.position_seqs[-T:]    # 最近T个时间步
+            local_maps.append(local_map_seq)
+            fused_maps.append(fused_map_seq)
+            positions.append(position_seq)
+        interest_maps = self.clusters[0].interest_map_seqs[-T:]  # 最近T个时间步
+        local_maps = np.array(local_maps)          # [N_v, T, H_l, W_l]
+        fused_maps = np.array(fused_maps)          # [N_v, T, H, W]
+        positions = np.array(positions)            # [N_v, T, 2]
+        interest_maps = np.array(interest_maps) # [T, H_g, W_g]
+        adjs = self.clusters[0].adjacency_seqs[-T:]  # 最近T个时间步
 
-            maps = []
-            fused_map = []
-            last_slices_cnt = []
-            cur_slice_cnt = []
-            adjacency_matrix = np.zeros((N, N), dtype=np.float32)
+        states = {
+            'local_maps': local_maps,
+            'fused_maps': fused_maps,
+            'positions': positions,
+            'interest_maps': interest_maps,
+            'adjs': adjs
+        }
 
-            for i in range(N):
-                agent_obs = single_obs[i + 1]  # vid 从 1 开始
-                local_map = agent_obs["local_map"]              # [H, W]
-                last_fused_map = agent_obs["last_fused_map"]    # [H, W]
-                prev_cnt = agent_obs["last_slices_cnt"]         # 标量/array
-                curr_cnt = agent_obs["current_slices_limits"]   # 标量/array
+        LOG.info(f"wrapper_state: local_maps shape: {local_maps.shape}, fused_maps shape: {fused_maps.shape}, \
+                 positions shape: {positions.shape}, interest_maps shape: {interest_maps.shape}, adjs length: {len(adjs)}")
 
-                # 可选标准化：
-                # local_map = (local_map - local_map.mean()) / (local_map.std() + 1e-6)
 
-                maps.append(np.expand_dims(local_map.astype(np.float32), axis=0))         # -> [1,H,W]
-                fused_map.append(np.expand_dims(last_fused_map.astype(np.float32), axis=0))
-
-                # 确保 budgets 变成 (1,) 再堆叠为 [N]
-                prev_cnt = np.asarray(prev_cnt, dtype=np.float32).reshape(1,)
-                curr_cnt = np.asarray(curr_cnt, dtype=np.float32).reshape(1,)
-                last_slices_cnt.append(prev_cnt)   # (1,)
-                cur_slice_cnt.append(curr_cnt)     # (1,)
-
-            maps_np = np.stack(maps, axis=0).astype(np.float32)         # [N,1,H,W]
-            fused_maps_np = np.stack(fused_map, axis=0).astype(np.float32)  # [N,1,H,W]
-            prev_budget = np.concatenate(last_slices_cnt, axis=0).astype(np.float32)  # [N]
-            cur_budget  = np.concatenate(cur_slice_cnt,  axis=0).astype(np.float32)   # [N]
-
-            # 构建邻接
-            for i in range(N):
-                for j in range(i + 1, N):
-                    do_overlap, overlap_degree = self.overlap(single_obs[i + 1], single_obs[j + 1])
-                    if do_overlap:
-                        adjacency_matrix[i, j] = adjacency_matrix[j, i] = overlap_degree
-
-            LOG.info(
-                f"shape: maps_np {maps_np.shape}, adjacency_matrix {adjacency_matrix.shape}, "
-                f"fused_maps_np {fused_maps_np.shape}, prev_budget {prev_budget.shape}, "
-                f"cur_budget {cur_budget.shape}"
-            )
-
-            # 返回:
-            # [N,1,H,W], [N,N], [N,1,H,W], [N], [N]
-            return maps_np, adjacency_matrix, fused_maps_np, prev_budget, cur_budget
-
-        if isinstance(obs, (list, tuple)):
-            # 多环境：长度就是 B
-            batch_maps = []
-            batch_adj = []
-            batch_fused_maps = []
-            batch_prev_budget = []
-            batch_cur_budget = []
-
-            for single_obs in obs:
-                maps_np, adj_np, fused_maps_np, prev_budget, cur_budget = _process_single(single_obs)
-                batch_maps.append(maps_np[None, ...])          # [1,N,1,H,W]
-                batch_adj.append(adj_np[None, ...])            # [1,N,N]
-                batch_fused_maps.append(fused_maps_np[None, ...])  # [1,N,1,H,W]
-                batch_prev_budget.append(prev_budget[None, ...])   # [1,N]
-                batch_cur_budget.append(cur_budget[None, ...])     # [1,N]  <- 修正
-
-            maps_b = np.concatenate(batch_maps, axis=0).astype(np.float32)        # [B,N,1,H,W]
-            adj_b = np.concatenate(batch_adj, axis=0).astype(np.float32)          # [B,N,N]
-            fused_b = np.concatenate(batch_fused_maps, axis=0).astype(np.float32) # [B,N,1,H,W]
-            prev_budget_b = np.concatenate(batch_prev_budget, axis=0).astype(np.float32)  # [B,N]
-            cur_budget_b  = np.concatenate(batch_cur_budget,  axis=0).astype(np.float32)  # [B,N]
-
-            # 转 torch
-            device = self.RL_device
-            maps_b_t = torch.tensor(maps_b, dtype=torch.float32, device=device)
-            adj_b_t = torch.tensor(adj_b, dtype=torch.float32, device=device)
-            fused_b_t = torch.tensor(fused_b, dtype=torch.float32, device=device)
-            prev_budget_b_t = torch.tensor(prev_budget_b, dtype=torch.float32, device=device)
-            cur_budget_b_t  = torch.tensor(cur_budget_b,  dtype=torch.float32, device=device)
-
-            return maps_b_t, adj_b_t, fused_b_t, prev_budget_b_t, cur_budget_b_t
-
-        else:
-            # 单环境：先做一份，再广播到 B
-            maps_np, adj_np, fused_maps_np, prev_budget, cur_budget = _process_single(obs)
-            maps_b = np.repeat(maps_np[None, ...], B, axis=0).astype(np.float32)         # [B,N,1,H,W]
-            adj_b  = np.repeat(adj_np[None,  ...], B, axis=0).astype(np.float32)         # [B,N,N]
-            fused_b = np.repeat(fused_maps_np[None, ...], B, axis=0).astype(np.float32)  # [B,N,1,H,W]
-            prev_budget_b = np.repeat(prev_budget[None, ...], B, axis=0).astype(np.float32)  # [B,N]
-            cur_budget_b  = np.repeat(cur_budget[None,  ...], B, axis=0).astype(np.float32)  # [B,N]
-
-            device = self.RL_device
-            maps_b_t = torch.tensor(maps_b, dtype=torch.float32, device=device)
-            adj_b_t = torch.tensor(adj_b, dtype=torch.float32, device=device)
-            fused_b_t = torch.tensor(fused_b, dtype=torch.float32, device=device)
-            prev_budget_b_t = torch.tensor(prev_budget_b, dtype=torch.float32, device=device)
-            cur_budget_b_t  = torch.tensor(cur_budget_b,  dtype=torch.float32, device=device)
-
-            return maps_b_t, adj_b_t, fused_b_t, prev_budget_b_t, cur_budget_b_t
+        return states
         
-    def wrapper_state_old(self, obs):
-        # 将obs转换为适合RL的状态表示
-        # 构建图神经网络的输入，即邻接矩阵和节点特征
-        feature_matrix = []
-        adjacency_matrix = np.zeros((self.n_vehicles, self.n_vehicles))
-        # LOG.info(f"obs[0]: {obs[0].keys()}")
-        for i in range(self.n_vehicles):
-            for vid, agent_obs in obs[0].items():
-                if agent_obs.get("vid") == i + 1: # 车辆ID从1开始
-                    feature = agent_obs.get("local_map").flatten()
-                    feature_matrix.append(feature)
-                    break
-            
-            for j in range(self.n_vehicles):
-                if i != j and adjacency_matrix[i, j] == 0:
-                    do_overlap, overlap_degree = self.overlap(obs[0][i+1], obs[0][j+1])
-                    if do_overlap:
-                        adjacency_matrix[i, j] = overlap_degree
-                        adjacency_matrix[j, i] = overlap_degree
-        
-        feature_matrix = np.array(feature_matrix)
-
-        LOG.info(f"feature matrix shape: {feature_matrix.shape}, adjacency matrix shape: {adjacency_matrix.shape}")
-
-        return feature_matrix, adjacency_matrix
     
     def score_map2action(self, score_map, local_maps, max_k):
         """
@@ -412,17 +364,21 @@ class CarlaEnv(gym.Env):
 
         return actions_batch
     
-    def action_select(self, states_tuple, max_k, collection_policy=False):
+    def action_select(self, states, max_k, collection_policy=False):
         """
         输入:
-        state: np.ndarray 或 torch.Tensor, 形状 [B, N, 1, H, W]
-        adjacency_matrix: np.ndarray 或 torch.Tensor, 形状 [B, N, N]
+        states: dict 包含:
+            local_maps: np.ndarray 或 torch.Tensor, 形状 [N, T, H, W]
+            fused_maps: np.ndarray 或 torch.Tensor, 形状 [N, T, H, W]
+            positions: np.ndarray 或 torch.Tensor, 形状 [N, T, 2]
+            interest_maps: np.ndarray 或 torch.Tensor, 形状 [T, H_g, W_g]
+            adjs
         返回:
         若 B==1: dict {vehicle_id: [(p, q, score), ...]}
         若 B>1 : list[dict], 每个 batch 一个 dict
         """
         device = self.RL_device
-        local_maps, adjs, fused_maps, prev_b, curr_b = states_tuple
+        local_maps, fused_maps, position, interested_maps, adj = states_tuple
         # ---- 1) 转成 torch.Tensor 并放到正确设备 ----
         # feature = torch.as_tensor(state, dtype=torch.float32, device=device)          # [B,N,1,H,W]
         # adjacency = torch.as_tensor(adjacency_matrix, dtype=torch.float32, device=device)  # [B,N,N]
@@ -433,11 +389,11 @@ class CarlaEnv(gym.Env):
         # dist = Beta(alpha, beta)
         # scores_map = dist.rsample().clamp(1e-6, 1-1e-6)               # [B,P,Q]
         # logp = dist.log_prob(scores_map).sum(dim=(1, 2))  
-        B, N, C, H, W = local_maps.shape
+        N, T, H, W = local_maps.shape
         if self.config.strategy == 'RL' :       
             scores_map, logp, value = self.RL_agent.action_select(states_tuple)
         else:
-            scores_map, logp, value = torch.zeros((1, H, W)), torch.zeros((1, H, W)), torch.zeros((1, H, W))
+            scores_map, logp, value = torch.zeros((N, H, W)), torch.zeros((N, H, W)), torch.zeros((N, H, W))
         _, P, Q = scores_map.shape
         randv = np.random.rand()
         if collection_policy:
@@ -449,22 +405,17 @@ class CarlaEnv(gym.Env):
                 collect = "RL"
         
         
-        k = max(0, min(max_k, P * Q))   #  k 不超过网格大小
-        if k == 0:
-            return {} if B == 1 else [{} for _ in range(B)]
-        LOG.info(f"Batch size: {B}, Vehicles: {N}, Channels: {C}, Height: {H}, Width: {W}, Patches: {P}, QPatches: {Q}, k: {k}")
-
+        k = max_k // N # max(0, min(max_k, P * Q)) / N   #  k 不超过网格大小
+        actions = {}
         # ---- 5) 对每个被选中的 patch (p,q)，在 N 辆车里选最大值的那辆 ----
         actions_batch = []
         if self.config.strategy == 'RL' or (collection_policy and collect == "RL"):
             actions_batch = self.score_map2action(scores_map, local_maps, k)
         else:
-            for b in range(B):
-                actions = {}
-
+            for i in range(N):
                 if self.config.strategy == "Random" or (collection_policy and collect == "Random"):
                     for m in range(k):
-                        vid = np.random.randint(1, N+1)
+                        vid = i + 1
                         p = np.random.randint(0, H)
                         q = np.random.randint(0, W)
                         actions.setdefault(vid, []).append((p, q, self.cars[vid].local_conf_map[p, q]))
@@ -491,12 +442,9 @@ class CarlaEnv(gym.Env):
                     pass
                 else:
                     raise ValueError(f"unimlemented strategy {self.config.strategy}")
-                actions_batch.append(actions)
 
-        if B == 1:
-            return scores_map, actions_batch[0], logp, value
-        else:
-            return scores_map, actions_batch, logp, value
+
+        return scores_map, actions, logp, value
 
 
     def _compute_reward(self):
