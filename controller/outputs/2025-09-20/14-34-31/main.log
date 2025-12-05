@@ -1,0 +1,5 @@
+[2025-09-20 14:34:34,045][model.diffusion][INFO] - Number of network parameters: 1651425
+[2025-09-20 14:34:34,230][root][INFO] - Turned off gradients for eta
+[2025-09-20 14:34:34,239][root][INFO] - Cloned model for fine-tuning
+[2025-09-20 14:34:34,239][root][INFO] - Turned off gradients of the pretrained network
+[2025-09-20 14:34:34,239][root][INFO] - Number of finetuned parameters: 1651425
