@@ -5,9 +5,6 @@ import matplotlib.pyplot as plt
 matplotlib.use('Agg')  # 或者 'Qt5Agg'
 import torch
 import torch.nn as nn
-from coperception.models.det import FaFNet, DiscoNet, When2com, V2VNet
-from coperception.utils.CoDetModule import FaFModule
-from coperception.utils.loss import SoftmaxFocalClassificationLoss, WeightedSmoothL1LocalizationLoss
 from nuscenes.utils.geometry_utils import transform_matrix
 from pyquaternion import Quaternion
 from functools import reduce

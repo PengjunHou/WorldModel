@@ -10,7 +10,7 @@ from envs.CarlaVehEnv.Car import Car, Clusters
 from envs.CarlaVehEnv.Object import Object
 from envs.CarlaVehEnv.CarlaDataCollector import V2XSimReader
 from envs.CarlaVehEnv.RSU import RSU
-from envs.CarlaVehEnv.utils import init_detection_model, topk_2d
+from envs.CarlaVehEnv.utils import  topk_2d
 from controller.PPO import ModelConfig, ActorCritic, PPO
 from controller.DPPO_agent import DPPO
 from controller.model.diffusion_ppo import PPODiffusion

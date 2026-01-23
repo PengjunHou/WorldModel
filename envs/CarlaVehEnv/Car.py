@@ -16,6 +16,7 @@ from src.det.ImageToBEV import ImageToBEVProjectorWithGlobal
 from src.det.process import process_single_vehicle_bev, fuse_multi_vehicle_detections, fuse_multi_vehicle_bev
 from src.det.utils import plot_detections
 from src.det.MultiDet import MultiAgentBEVFusion
+from det.DetectionVis_old import BEVFusionDetectionVisualizer
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -51,6 +52,8 @@ class Car():
                                         self.dataset.local_bev_config[ 'grid_size'][1]), dtype=np.float32)
 
         self.comm_comp_model = Comm_Comp_Base(self.config)
+        
+        self.detVis = BEVFusionDetectionVisualizer(self.results_path)
 
 
     def setup(self):
@@ -618,6 +621,19 @@ class Clusters():
             iou_threshold=0.5,
             score_threshold=0.3
         )
+        
+        for vid, member in self.members.items():
+            ego_vehicle_world_pos = self.vehicles_data_list[vid-1]['vehicle_global_position']
+            save_path = os.path.join(member.detVis.output_dir, f"time_{time_step:03d}_vehicle_{vid}_fused_detections.png")
+            
+            member.detVis.visualize_fusion_comparison(
+                vehicle_id = "vehicle_" + str(vid),
+                ego_center_world = ego_vehicle_world_pos,
+                own_projected_positions=self.vehicles_data_list[vid-1]['projected_positions'],
+                others_projected_positions=fused_detections,
+                local_bev_config = self.dataset.local_bev_config,
+                save_path = save_path,
+            )
 
         # 根据车辆之间距离，构建邻接矩阵
         for i, member_i in enumerate(self.members.values()):
