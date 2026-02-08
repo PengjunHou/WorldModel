@@ -204,9 +204,7 @@ class ImageToBEVProjectorWithGlobal:
             
             if world_pos_global is None:
                 continue
-            
-            # ⭐ 修正：删除了错误的 Y+Z 加法
-            # 直接使用原始坐标
+            print(f"Detected object at global position: {world_pos_global}")
             grid_pos = self._world_to_grid(world_pos_global)
             
             if grid_pos is not None:
@@ -318,7 +316,7 @@ class ImageToBEVProjectorWithGlobal:
                 proj_local['distance_to_center'] = np.sqrt(bev_x**2 + bev_y**2)
                 
                 projected_positions_local.append(proj_local)
-        
+        print(f"ego vehicle {self.ego_vehicle_params}")
         print(f"\n总计: {len(projected_positions_local)} 个检测在局部BEV范围内")
         
         # ========== 6. 局部BEV信息 ==========
@@ -504,7 +502,7 @@ class ImageToBEVProjectorWithGlobal:
         else:
             return None
     
-    def _fill_bev_region(self, bev_map, gx, gy, value, radius=2):
+    def _fill_bev_region(self, bev_map, gx, gy, value, radius=0):
         """在BEV地图上填充区域"""
         H, W = bev_map.shape
         
@@ -903,7 +901,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig('bev_projection_result.png', dpi=150, bbox_inches='tight')
     print(f"\n✓ 可视化已保存: bev_projection_result.png")
-    plt.show()
+    # plt.show()
 
     # =============== 6. 打印投影结果 ===============
     print("\n" + "="*80)

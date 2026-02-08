@@ -347,7 +347,7 @@ class MultiAgentBEVFusion:
         plt.tight_layout()
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"✓ 可视化结果已保存到: {save_path}")
-        plt.show()
+        # plt.show()
         
     def generate_comparison_stats(self, agents_data, fused_result):
         """
@@ -525,7 +525,7 @@ class MultiAgentBEVFusion:
         plt.tight_layout()
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"\n✓ Area vehicle counts 可视化已保存: {save_path}")
-        plt.show()
+        # plt.show()
 
 
 if __name__ == "__main__":

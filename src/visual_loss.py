@@ -70,4 +70,4 @@ ax1.legend(
 fig.tight_layout()
 plt.grid(True, axis='both', linestyle='--', alpha=0.4)
 plt.savefig("./reward_loss_300step.png", dpi=400)
-plt.show()
+# plt.show()

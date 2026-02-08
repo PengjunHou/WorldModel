@@ -415,7 +415,7 @@ if __name__ == "__main__":
 
     plt.tight_layout()
     plt.savefig('bev_projection_result.png', dpi=150)
-    plt.show()
+    # plt.show()
 
     # =============== 6. 打印投影结果 ===============
     print("投影结果:")

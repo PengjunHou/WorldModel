@@ -63,5 +63,5 @@ ax.grid(True)
 
 plt.tight_layout()
 plt.savefig("./reward_compare_K10_K20.png", dpi=300)
-plt.show()
+# plt.show()
 

@@ -53,4 +53,4 @@ plt.grid(True, axis='both', linestyle='--', alpha=0.4)
 fig.tight_layout()
 
 plt.savefig("./reward_only_300step.png", dpi=400)
-plt.show()
+# plt.show()

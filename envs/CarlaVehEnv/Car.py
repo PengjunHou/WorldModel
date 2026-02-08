@@ -496,7 +496,7 @@ class Car():
             plt.tight_layout()
             figfile = os.path.join(self.results_path, f"detection_bev_t{time_step:03d}.png")
             plt.savefig(figfile, dpi=150)
-            plt.show()
+            # plt.show()
 
         return vehicle_data, projector
 

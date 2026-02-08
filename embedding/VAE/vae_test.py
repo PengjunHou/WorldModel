@@ -56,7 +56,7 @@ imshow_tensor(ax, reconstructions[0])
 ax.axis('off')  
 plt.title("VAE Reconstruction", fontsize=16)
 plt.tight_layout()
-plt.show()
+# plt.show()
 
 
 # Show original images
@@ -65,4 +65,4 @@ imshow_tensor(ax, eval_dataset[0])
 ax.axis('off')  
 plt.suptitle("Original Images", fontsize=16)
 plt.tight_layout()
-plt.show()
+# plt.show()

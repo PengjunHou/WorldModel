@@ -60,7 +60,7 @@ class VAE:
             
             fig.suptitle("Reconstructions VS Orignal", fontsize=16)
             plt.tight_layout(rect=[0, 0, 1, 0.95]) 
-            plt.show()
+            # plt.show()
         
         return rescontructions
     

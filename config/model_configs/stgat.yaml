@@ -1,0 +1,85 @@
+defaults:
+  checkpoint_dir: ./checkpoints
+  
+  learning_rate: 1e-4
+  batch_size: 8
+  num_epochs: 300
+  max_episode_length: 100
+  replay_buffer_size: 10000
+
+  history_length: 5
+  discount_factor: 0.95
+
+  epsilon_start: 1.0
+  epsilon_end: 0.01
+  epsilon_decay: 0.995
+  target_update_freq: 10
+  
+  # ================= 环境参数 =================
+  env:
+    local_map_height: 16
+    local_map_width: 16
+    global_map_height: 128
+    global_map_width: 128
+    comm_range: 150.0        # meters
+
+  # ================= 网络架构 =================
+  model:
+    vae:
+      latent_dim: 64
+
+    interest_encoder:
+      dim: 128
+
+    position_encoder:
+      dim: 32
+
+    fusion:
+      fused_feature_dim: 256
+
+    stgat:
+      hidden_dim: 512
+      num_spatial_layers: 3
+      num_temporal_layers: 3
+      num_heads: 4
+      dropout: 0.1
+      use_edge_weights: true
+
+    q_generator:
+      type: cnn               # cnn | diffusion
+
+
+
+  # ================= VAE 预训练 =================
+  vae_pretrain:
+    num_samples: 100
+    epochs: 100
+    batch_size: 16
+    lr: 1e-4
+
+    conf_map:
+      data_dir: /home/peh324/Codes/WorldModel/src/extract/data
+      checkpoint_dir: /home/peh324/Codes/WorldModel/src/extract/checkpoints
+      checkpoint_path: /home/peh324/Codes/WorldModel/src/extract/checkpoints/perception_vae.pth
+
+    interested_map:
+      checkpoint_dir: /home/peh324/Codes/WorldModel/src/extract/checkpoints_interestedmap
+      checkpoint_path: /home/peh324/Codes/WorldModel/src/extract/checkpoints_interestedmap/perception_N_vae.pth
+
+    visualize_dir: /home/peh324/Codes/WorldModel/src/extract/vae_vis
+
+
+
+  # ================= 动作选择 =================
+  action:
+    top_k: 16        # 25% regions selected
+
+  # ================= 损失权重 =================
+  loss:
+    bellman: 1.0
+    spatial_smooth: 0.1
+    temporal_smooth: 0.05
+
+  # ================= 日志与保存 =================
+  logging:
+    tensorboard_dir: ./tensorboard

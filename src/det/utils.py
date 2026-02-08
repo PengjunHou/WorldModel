@@ -113,7 +113,7 @@ def visualize_detections(detections, image_width=800, image_height=600, output_p
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
         print(f"图像已保存到: {output_path}")
     else:
-        plt.show()
+        # plt.show()
     
     return fig, ax
 

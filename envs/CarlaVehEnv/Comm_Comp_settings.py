@@ -162,11 +162,11 @@ if __name__ == "__main__":
     plt.plot(Ks, vals, marker='o')
     plt.title("J(K)")
     plt.xlabel("K"); plt.ylabel("J(K)")
-    plt.tight_layout(); plt.show()
+    plt.tight_layout(); # plt.show()
 
     plt.figure(figsize=(6,3))
     plt.plot(Ks, deltas, marker='o')
     plt.axhline(0.0, linestyle='--')
     plt.title("ΔJ(K) = J(K) - J(K-1)")
     plt.xlabel("K"); plt.ylabel("ΔJ(K)")
-    plt.tight_layout(); plt.show()
+    plt.tight_layout(); # plt.show()

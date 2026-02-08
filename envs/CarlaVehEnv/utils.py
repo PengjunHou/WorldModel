@@ -112,7 +112,7 @@ def visualize_conf_map(conf_map, title="Local Confidence Map", save_path=None):
         plt.savefig(save_path, dpi=200)
         plt.close()
     else:
-        plt.show()
+        # plt.show()
 
 
 def map_local_conf_to_global(local_conf_map, trans_matrix, config):
@@ -463,7 +463,7 @@ def overlay_confidence_maps(maps, alphas=None, title="Overlay of 5 vehicle confi
 
     plt.tight_layout()
     if out_path is None:
-        plt.show()
+        # plt.show()
     else:
         plt.savefig(out_path, dpi=150)
         plt.close()
