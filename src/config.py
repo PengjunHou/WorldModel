@@ -61,7 +61,7 @@ class Config:
     # Q网络训练
     LEARNING_RATE = 1e-4
     BATCH_SIZE = 8
-    NUM_EPOCHS = 300
+    NUM_EPOCHS = 3
     
     # RL参数
     EPSILON_START = 1.0

@@ -16,7 +16,10 @@ from src.det.ImageToBEV import ImageToBEVProjectorWithGlobal
 from src.det.process import process_single_vehicle_bev, fuse_multi_vehicle_detections, fuse_multi_vehicle_bev
 from src.det.utils import plot_detections
 from src.det.MultiDet import MultiAgentBEVFusion
-from det.DetectionVis_old import BEVFusionDetectionVisualizer
+from src.gode.gode_model import VehicleGODEPredictor
+from src.extract.vae_module import PerceptionMapVAE
+from src.train_odemodel import GODETrainer
+# from src.det.DetectionVis_old import BEVFusionDetectionVisualizer
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -53,12 +56,46 @@ class Car():
 
         self.comm_comp_model = Comm_Comp_Base(self.config)
         
-        self.detVis = BEVFusionDetectionVisualizer(self.results_path)
+        # self.detVis = BEVFusionDetectionVisualizer(self.results_path)
+        # self.gode_net = GodeNet()
+        vae = PerceptionMapVAE(
+            map_size=(16, 16),
+            latent_dim=64
+        ).to(self.device)
+        vae_model_path = '/home/peh324/Codes/WorldModel/src/extract/checkpoints/perception_vae.pth'
+        if os.path.exists(vae_model_path):
+            checkpoint = torch.load(vae_model_path, map_location=self.device)
+            vae.load_state_dict(checkpoint['model_state_dict'])
+            print(f"✓ Loaded VAE from {vae_model_path}")
+        else:
+            print(f"⚠️  VAE checkpoint not found: {vae_model_path}")
+            print("    Using randomly initialized VAE (not recommended)")
+            # raise "vae error"
+        
+        self.gode_net = VehicleGODEPredictor(
+            vae_encoder=vae,
+            map_size=(16, 16),
+            vae_latent_dim=64,
+            temporal_hidden_dim=128,
+            gnn_hidden_dim=256,
+            num_gnn_layers=3,
+            k_embed_dim=16,
+            comm_range=100
+        ).to(self.device)
+        self.gode_net.eval()
 
+        gode_model_path = '/home/peh324/Codes/WorldModel/checkpoints/gode/best_model.pth'
+        check_points = torch.load(gode_model_path, map_location=self.device)
+        self.gode_net.load_state_dict(check_points['model_state_dict'])
+
+        
 
     def setup(self):
         if not os.path.exists(self.results_path):
             os.makedirs(self.results_path)
+            
+    def compare_diff(self, pred_fused_map, groudth):
+        pred_fused_map
 
     def apply_control(self, time_step, actions, area_cnt, vehicles_info):
         """
@@ -581,6 +618,9 @@ class Clusters():
         return np.any(overlap_area), overlap_degree
 
     def get_state(self, time_step):
+        """
+        获取cluster状态并使用GODE进行通信决策
+        """
         # Return the state of the cluster
         vehicles_at_time_step = self.dataset.get_vehicles_at_time(time_step)
         print(f"检测到 {len(vehicles_at_time_step)} 辆车")
@@ -593,24 +633,223 @@ class Clusters():
         cur_fused_maps = []
         positions = []
         adjacency_matrix = np.zeros((len(self.members), len(self.members)), dtype=np.float32)
-
+        
+        interest_deduct = []
+        threshold = 0.8  # GODE预测得分阈值
+        comm_period = getattr(self, 'comm_period', 5)  # 通信周期,默认5步
+        
+        # 收集所有车辆的历史数据
+        all_vehicles_history_maps = []      # [N_vehicles, T, H, W]
+        all_vehicles_history_positions = [] # [N_vehicles, T, 2]
+        all_vehicles_current_fused = []     # [N_vehicles, H, W]
+        vehicle_ids = list(self.members.keys())
+        
+        # ===== 第一步: 收集每辆车的状态和历史数据 =====
         for vid, member in self.members.items():
             vehicle_info = vehicles_at_time_step[vid]
             print(f"\n处理车辆 {vehicle_info['agent_id']}")
             obs, vehicle_data, projector = member.get_state(vehicle_info, time_step)
             self.vehicles_data_list.append(vehicle_data)
+            
             local_maps.append(obs['local_maps'])
             fused_maps.append(obs['fused_maps'])
             cur_fused_maps.append(obs['cur_fused_maps'])
             positions.append(obs['position'])
-
             
+            # ===== 从member的序列缓存中获取历史 =====
+            # member.local_map_seqs: list of [H, W], 长度为T
+            # member.position_seqs: list of [2], 长度为T
+            
+            if len(member.local_map_seqs) > 0 and len(member.position_seqs) > 0:
+                # 转换为numpy数组
+                local_map_history = np.array(member.local_map_seqs)      # [T, H, W]
+                position_history = np.array(member.position_seqs)        # [T, 2]
+                
+                all_vehicles_history_maps.append(local_map_history)
+                all_vehicles_history_positions.append(position_history)
+                
+                print(f"  历史序列长度: maps={len(member.local_map_seqs)}, positions={len(member.position_seqs)}")
+            else:
+                # 如果历史为空(刚开始),用当前数据填充
+                print(f"  ⚠️  车辆{vid}历史为空,用当前数据填充")
+                T = member.seqs_len
+                local_map_history = np.tile(obs['local_maps'], (T, 1, 1))  # [T, H, W]
+                position_history = np.tile(obs['position'], (T, 1))         # [T, 2]
+                
+                all_vehicles_history_maps.append(local_map_history)
+                all_vehicles_history_positions.append(position_history)
+            
+            all_vehicles_current_fused.append(obs['cur_fused_maps'])
+        
+        # 添加维度检查
+        print(f"\n{'='*60}")
+        print(f"历史数据维度检查:")
+        for i, vid in enumerate(vehicle_ids):
+            print(f"  车辆{vid}: maps={all_vehicles_history_maps[i].shape}, "
+                f"positions={all_vehicles_history_positions[i].shape}")
+        print(f"{'='*60}")
+        
+        # ===== 第二步: GODE预测与评估 =====
+        for i, (vid, member) in enumerate(self.members.items()):
+            if member.gode_net is not None:
+                try:
+                    # ===== 确保模型在正确设备 =====
+                    device = next(member.gode_net.parameters()).device
+                    member.gode_net = member.gode_net.to(device)
+                    
+                    # 准备当前车辆的输入
+                    self_history_maps = all_vehicles_history_maps[i]          # [T, H, W]
+                    self_history_positions = all_vehicles_history_positions[i] # [T, 2]
+                    
+                    # 验证维度
+                    assert len(self_history_maps.shape) == 3, \
+                        f"self_history_maps维度错误: {self_history_maps.shape}, 期望 [T, H, W]"
+                    assert len(self_history_positions.shape) == 2, \
+                        f"self_history_positions维度错误: {self_history_positions.shape}, 期望 [T, 2]"
+                    
+                    T, H, W = self_history_maps.shape
+                    
+                    # ===== 构建其他车辆的数据 (考虑通信延迟) =====
+                    other_indices = [j for j in range(len(vehicle_ids)) if j != i]
+                    N_others = len(other_indices)
+                    
+                    others_maps = np.zeros((N_others, T, H, W), dtype=np.float32)
+                    others_positions = np.zeros((N_others, T, 2), dtype=np.float32)
+                    
+                    # 简化通信延迟模型
+                    for idx_other, j in enumerate(other_indices):
+                        for t_idx in range(T):
+                            # 计算当前历史时刻的绝对时间
+                            current_absolute_time = time_step - T + t_idx + 1
+                            
+                            # 上次通信时间 (向下取整到comm_period的倍数)
+                            last_comm_time = (current_absolute_time // comm_period) * comm_period
+                            
+                            # 数据延迟
+                            delay = current_absolute_time - last_comm_time
+                            
+                            # 使用延迟后的地图索引
+                            delayed_t_idx = max(0, t_idx - delay)
+                            
+                            # Local map: 使用延迟的数据
+                            others_maps[idx_other, t_idx] = all_vehicles_history_maps[j][delayed_t_idx]
+                            
+                            # Position: 实时 (GPS高频广播)
+                            others_positions[idx_other, t_idx] = all_vehicles_history_positions[j][t_idx]
+                    
+                    # 当前K值
+                    K_value = self.config.TOP_K
+                    
+                    # 转换为torch张量并添加batch维度
+                    self_history_maps_t = torch.FloatTensor(self_history_maps).unsqueeze(0).to(device)  # [1, T, H, W]
+                    self_history_positions_t = torch.FloatTensor(self_history_positions).unsqueeze(0).to(device)  # [1, T, 2]
+                    others_maps_t = torch.FloatTensor(others_maps).unsqueeze(0).to(device)  # [1, N-1, T, H, W]
+                    others_positions_t = torch.FloatTensor(others_positions).unsqueeze(0).to(device)  # [1, N-1, T, 2]
+                    K_value_t = torch.FloatTensor([[K_value]]).to(device)  # [1, 1]
+                    
+                    print(f"\n  车辆{vid} GODE输入:")
+                    print(f"    self_history_maps_t: {self_history_maps_t.shape}")
+                    print(f"    self_history_positions_t: {self_history_positions_t.shape}")
+                    print(f"    others_maps_t: {others_maps_t.shape}")
+                    print(f"    others_positions_t: {others_positions_t.shape}")
+                    print(f"    K_value_t: {K_value_t.shape}")
+                    
+                    # GODE预测
+                    with torch.no_grad():
+                        # 确保VAE encoder也在正确设备
+                        if hasattr(member.gode_net, 'vae_encoder'):
+                            member.gode_net.vae_encoder = member.gode_net.vae_encoder.to(device)
+                        
+                        predicted_fused = member.gode_net(
+                            self_history_maps_t,
+                            self_history_positions_t,
+                            others_maps_t,
+                            others_positions_t,
+                            K_value_t
+                        )  # [1, H, W]
+                    
+                    # 转回numpy
+                    predicted_fused = predicted_fused.squeeze(0).cpu().numpy()  # [H, W]
+                    
+                    # 实际的fused map
+                    actual_fused = all_vehicles_current_fused[i]  # [H, W]
+                    
+                    # 计算相似度得分
+                    pred_flat = predicted_fused.flatten()
+                    actual_flat = actual_fused.flatten()
+                    
+                    # 方法1: 相关系数
+                    if pred_flat.std() > 1e-6 and actual_flat.std() > 1e-6:
+                        score = np.corrcoef(pred_flat, actual_flat)[0, 1]
+                    else:
+                        # Fallback: MSE转换
+                        mse = np.mean((predicted_fused - actual_fused) ** 2)
+                        score = 1.0 / (1.0 + mse)
+                    
+                    # 处理NaN
+                    if np.isnan(score):
+                        score = 0.0
+                    
+                    print(f"  车辆{vid} GODE预测得分: {score:.4f} (阈值: {threshold})")
+                    
+                    # 根据得分决定是否需要通信
+                    if score < threshold:
+                        interest_deduct.append(vid)
+                        print(f"  ⚠️  预测偏差大 (score={score:.3f} < {threshold}), 需要通信更新")
+                    else:
+                        print(f"  ✓ 预测准确 (score={score:.3f} >= {threshold}), 可跳过通信")
+                    
+                except Exception as e:
+                    print(f"  ❌ GODE预测失败: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    # 失败时保守策略: 需要通信
+                    interest_deduct.append(vid)
+            else:
+                # 没有GODE模型,默认需要通信
+                print(f"  ⚠️  车辆{vid}无GODE模型,默认需要通信")
+                interest_deduct.append(vid)
+        
+        # ===== 第三步: 构建邻接矩阵 =====
+        comm_range = getattr(self, 'comm_range', 100.0)
+        for i, vid_i in enumerate(vehicle_ids):
+            for j, vid_j in enumerate(vehicle_ids):
+                if i != j:
+                    # 使用当前位置 (历史的最后一个)
+                    pos_i = all_vehicles_history_positions[i][-1]  # [2]
+                    pos_j = all_vehicles_history_positions[j][-1]  # [2]
+                    distance = np.linalg.norm(pos_i - pos_j)
+                    if distance <= comm_range:
+                        adjacency_matrix[i, j] = 1.0
+        
+        # ===== 第四步: 组装cluster状态 =====
+        cluster_state = {
+            'local_maps': np.stack(local_maps, axis=0),
+            'fused_maps': np.stack(fused_maps, axis=0) if fused_maps else None,
+            'cur_fused_maps': np.stack(cur_fused_maps, axis=0),
+            'positions': np.stack(positions, axis=0),
+            'adjacency_matrix': adjacency_matrix,
+            'interest_deduct': interest_deduct,
+            'num_need_comm': len(interest_deduct),
+            'comm_efficiency': 1.0 - len(interest_deduct) / len(self.members) if len(self.members) > 0 else 0.0
+        }
+        
+        print(f"\n{'='*60}")
+        print(f"GODE通信决策结果:")
+        print(f"  通信周期: {comm_period}步")
+        print(f"  总车辆数: {len(self.members)}")
+        print(f"  需要通信: {interest_deduct} ({len(interest_deduct)}辆)")
+        print(f"  可跳过: {len(self.members) - len(interest_deduct)}辆")
+        print(f"  通信节省: {cluster_state['comm_efficiency']*100:.1f}%")
+        print(f"{'='*60}\n")
+                
         fused_bev_confidence, area_vehicle_counts = fuse_multi_vehicle_bev(
             vehicles_data=self.vehicles_data_list,
             global_bev_config=self.dataset.global_bev_config,
             local_bev_config=self.dataset.local_bev_config,
             fusion_method='max',
-            visualize=self.config.visualize
+            visualize=self.config.visualize,
+            interest_deduct = interest_deduct
         )
         interest_maps = area_vehicle_counts
         self.interest_map_seqs.append(interest_maps)
@@ -622,18 +861,134 @@ class Clusters():
             score_threshold=0.3
         )
         
-        for vid, member in self.members.items():
-            ego_vehicle_world_pos = self.vehicles_data_list[vid-1]['vehicle_global_position']
-            save_path = os.path.join(member.detVis.output_dir, f"time_{time_step:03d}_vehicle_{vid}_fused_detections.png")
+        # for vid, member in self.members.items():
+        #     ego_vehicle_world_pos = self.vehicles_data_list[vid-1]['vehicle_global_position']
+        #     save_path = os.path.join(member.detVis.output_dir, f"time_{time_step:03d}_vehicle_{vid}_fused_detections.png")
             
-            member.detVis.visualize_fusion_comparison(
-                vehicle_id = "vehicle_" + str(vid),
-                ego_center_world = ego_vehicle_world_pos,
-                own_projected_positions=self.vehicles_data_list[vid-1]['projected_positions'],
-                others_projected_positions=fused_detections,
-                local_bev_config = self.dataset.local_bev_config,
-                save_path = save_path,
-            )
+        #     member.detVis.visualize_fusion_comparison(
+        #         vehicle_id = "vehicle_" + str(vid),
+        #         ego_center_world = ego_vehicle_world_pos,
+        #         own_projected_positions=self.vehicles_data_list[vid-1]['projected_positions'],
+        #         others_projected_positions=fused_detections,
+        #         local_bev_config = self.dataset.local_bev_config,
+        #         save_path = save_path,
+        #     )
+
+        # 根据车辆之间距离，构建邻接矩阵
+        for i, member_i in enumerate(self.members.values()):
+            pos_i = np.array(positions[i])
+            for j, member_j in enumerate(self.members.values()):
+                pos_j = np.array(positions[j])
+                distance = np.linalg.norm(pos_i - pos_j)
+                adjacency_matrix[i, j] = 1/(1 + distance)  # 距离越近，权重越大
+        self.adjacency_seqs.append(adjacency_matrix)
+        
+        # 先固定K*
+        # N = self.config.num_vehicles
+        # IoU = 0
+        # theory_K_star = 0
+        # if not self.pre_Iou:
+        #     mean_overlap = 0
+        #     cnt = 0
+            
+        #     for i in range(N):
+        #         for j in range(i + 1, N):
+        #             do_overlap, overlap_degree = self.overlap(cluster_state[i + 1], cluster_state[j + 1])
+        #             mean_overlap += overlap_degree
+        #             cnt += 1
+        #     mean_overlap = mean_overlap / max(cnt, 1)
+            
+        #     IoU = self.compute_IoU(mean_overlap)
+        #     theory_K_star, info = self.comm_comp_model.compute_k_star(self.config.num_vehicles, self.dataset.map_dims[0] * self.dataset.map_dims[1], IoU)
+        # else:
+        #     IoU = self.pre_IoU_step[time_step]
+        #     ind = int(IoU // 0.005)
+        #     theory_K_star = self.pre_IoU2K_star[ind]
+
+        # self.IoU = IoU
+        # self.K_star_value = theory_K_star
+        # self.comm_comp_model._print(self.members[1].local_conf_map.shape[0] * self.members[1].local_conf_map.shape[1], theory_K_star)
+        # LOG.info(f"time step {time_step}, IoU {IoU}, theory K star {theory_K_star}")
+        # for i in range(N):
+        #     self.members[i+1].last_slices_cnt = self.members[i+1].current_slices_limits
+        #     self.members[i+1].current_slices_limits = theory_K_star
+        #     cluster_state[i+1].update({
+        #         'last_slices_cnt': self.members[i+1].current_slices_limits,
+        #         'current_slices_limits': theory_K_star})
+
+        states = {
+            'local_maps': np.array(local_maps),
+            'fused_maps': np.array(fused_maps),
+            'cur_fused_maps': np.array(cur_fused_maps),
+            'positions': np.array(positions),
+            'fused_bev_confidence': np.array(fused_bev_confidence),
+            'interest_maps': np.array(interest_maps),
+            'vehicles_data_list': self.vehicles_data_list
+        }
+
+        # verify_coordinate_mapping(self.vehicles_data_list)
+
+        return states
+
+    def get_state_olde(self, time_step):
+        # Return the state of the cluster
+        vehicles_at_time_step = self.dataset.get_vehicles_at_time(time_step)
+        print(f"检测到 {len(vehicles_at_time_step)} 辆车")
+        print(f"{'-'*40}")
+        self.vehicles_data_list = []
+
+        cluster_state = {}
+        local_maps = []
+        fused_maps = []
+        cur_fused_maps = []
+        positions = []
+        adjacency_matrix = np.zeros((len(self.members), len(self.members)), dtype=np.float32)
+        
+        interest_deduct = []
+        thresthod = 0.2
+
+        for vid, member in self.members.items():
+            vehicle_info = vehicles_at_time_step[vid]
+            print(f"\n处理车辆 {vehicle_info['agent_id']}")
+            obs, vehicle_data, projector = member.get_state(vehicle_info, time_step)
+            self.vehicles_data_list.append(vehicle_data)
+            local_maps.append(obs['local_maps'])
+            fused_maps.append(obs['fused_maps'])
+            cur_fused_maps.append(obs['cur_fused_maps'])
+            positions.append(obs['position'])
+            # 如果gode预测到的fused map与实际的fused map 平均score小于阈值，就把这个vid记录到interest_deduct中
+
+            
+        fused_bev_confidence, area_vehicle_counts = fuse_multi_vehicle_bev(
+            vehicles_data=self.vehicles_data_list,
+            global_bev_config=self.dataset.global_bev_config,
+            local_bev_config=self.dataset.local_bev_config,
+            fusion_method='max',
+            visualize=self.config.visualize,
+            interest_deduct = interest_deduct
+        )
+        interest_maps = area_vehicle_counts
+        self.interest_map_seqs.append(interest_maps)
+        
+        # 融合检测结果
+        fused_detections = fuse_multi_vehicle_detections(
+            vehicles_data=self.vehicles_data_list,
+            iou_threshold=0.5,
+            score_threshold=0.3
+        )
+        
+        # for vid, member in self.members.items():
+        #     ego_vehicle_world_pos = self.vehicles_data_list[vid-1]['vehicle_global_position']
+        #     save_path = os.path.join(member.detVis.output_dir, f"time_{time_step:03d}_vehicle_{vid}_fused_detections.png")
+            
+        #     member.detVis.visualize_fusion_comparison(
+        #         vehicle_id = "vehicle_" + str(vid),
+        #         ego_center_world = ego_vehicle_world_pos,
+        #         own_projected_positions=self.vehicles_data_list[vid-1]['projected_positions'],
+        #         others_projected_positions=fused_detections,
+        #         local_bev_config = self.dataset.local_bev_config,
+        #         save_path = save_path,
+        #     )
 
         # 根据车辆之间距离，构建邻接矩阵
         for i, member_i in enumerate(self.members.values()):

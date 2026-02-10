@@ -528,7 +528,7 @@ class Evaluator:
         
         print(f"✓ Comparison plot saved to {save_path}")
 
-    def compare_different_topk(self, topk_list=[5, 10, 20, 30, 40, 50, 100, 200], num_episodes=10):
+    def compare_different_topk(self, topk_list=[5, 10, 20, 30, 40, 50], num_episodes=10):
         """
         比较相同模型在不同 TOP-K 配置下的性能
         ----------------------------------------------------
@@ -803,20 +803,20 @@ def main():
     evaluator = Evaluator(env_config, model_config, checkpoint_path)
     
     # 评估
-    # evaluator.evaluate(num_episodes=1)
+    evaluator.evaluate(num_episodes=1)
     
     # # 可视化
     # evaluator.visualize_q_maps()
-    # evaluator.visualize_q_maps_vehicle_compare(vehicle_id=1)
+    evaluator.visualize_q_maps_vehicle_compare(vehicle_id=1)
     
     # # 与baseline比较
-    # evaluator.compare_with_baselines(num_episodes=1)
+    evaluator.compare_with_baselines(num_episodes=1)
 
-    # evaluator.compare_different_topk(num_episodes=1)
+    evaluator.compare_different_topk(num_episodes=1)
 
     # evaluator.compare_all_methods_under_topk(num_episodes=1)
 
-    plot_topk_comparison_from_csv()
+    # plot_topk_comparison_from_csv()
 
 
 

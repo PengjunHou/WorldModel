@@ -345,7 +345,8 @@ def fuse_multi_vehicle_bev(vehicles_data: List[Dict],
                            global_bev_config: Dict,
                            local_bev_config: Dict,
                            fusion_method: str = 'max',
-                           visualize = False) -> tuple:
+                           visualize = False, 
+                           interest_deduct = []) -> tuple:
     """
     融合多个车辆的BEV置信度图
     
@@ -363,7 +364,7 @@ def fuse_multi_vehicle_bev(vehicles_data: List[Dict],
 
 
     # 融合所有车辆的BEV数据
-    fused_result = fusion_system.fuse_multi_agent_bev(vehicles_data)
+    fused_result = fusion_system.fuse_multi_agent_bev(vehicles_data, interest_deduct = interest_deduct)
 
     # =============== 4. 可视化 ===============
     if visualize:

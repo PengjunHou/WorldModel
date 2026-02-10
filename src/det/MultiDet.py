@@ -32,7 +32,7 @@ class MultiAgentBEVFusion:
             (0.0, 1.0, 1.0),  # 青色
         ]
         
-    def fuse_multi_agent_bev(self, agents_data):
+    def fuse_multi_agent_bev(self, agents_data, interest_deduct = []):
         """
         融合多个车辆的BEV数据
         
@@ -119,9 +119,10 @@ class MultiAgentBEVFusion:
                 # 统计覆盖
                 if grid_x_max > grid_x_min and grid_y_max > grid_y_min:
                     # ⭐ 注意：数组索引是 [行, 列] = [Y, X]
-                    area_vehicle_counts[grid_y_min:grid_y_max, grid_x_min:grid_x_max] += 1
+                    if agent_id not in interest_deduct:
+                        area_vehicle_counts[grid_y_min:grid_y_max, grid_x_min:grid_x_max] += 1
                     
-                    coverage_pixels = (grid_y_max - grid_y_min) * (grid_x_max - grid_x_min)
+                        coverage_pixels = (grid_y_max - grid_y_min) * (grid_x_max - grid_x_min)
                     # print(f"  覆盖像素数: {coverage_pixels}")
                 else:
                     print(f"  ⚠️ 网格范围无效")
