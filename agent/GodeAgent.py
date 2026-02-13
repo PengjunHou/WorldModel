@@ -5,7 +5,6 @@ GODE Environment Wrapper for CARLA
 
 import torch
 import numpy as np
-import dgl
 from typing import Dict, List, Tuple, Optional
 import os
 from collections import defaultdict

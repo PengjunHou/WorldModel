@@ -65,9 +65,10 @@ carla_navigation:
 carla_comm:
   env:
     name: CarlaCommEnv-v0
-    observation.enabled: [camera, collision, lidar, birdeye_raw]
+    observation.enabled: [camera]
     num_vehicles: 100
-    obs_vehicles: 10
+    obs_vehicles: 6
+    max_episode_steps: 600
     <<: *carla_wpt
     lane_start_points:
       - [5.8, 100, 0.1]

@@ -92,6 +92,7 @@ class WorldManager:
     def step(self) -> None:
         self._time_step += 1
         self._world.tick()
+        self._world.tick()
         if self._on_step is not None:
             self._on_step()
         

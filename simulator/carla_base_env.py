@@ -132,7 +132,7 @@ class CarlaBaseEnv(gym.Env):
             self.obs.setdefault(actor_id, one_obs)
             obs_info.setdefault(actor_id, one_obs_info)
 
-        return self.obs, obs_info
+        return (self.obs, obs_info)
 
     def get_vehicle_control(self, action):
         """

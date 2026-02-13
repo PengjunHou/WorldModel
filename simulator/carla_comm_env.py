@@ -18,36 +18,39 @@ from .observer import Observer
 from .network import NetworkBase
 from .detection import Detection
 from .utils import g_camera_params, carla_rotation_to_wxyz, is_regular_sedan
-from agent import process_single_vehicle_bev, plot_detections, fuse_multi_vehicle_bev, fuse_multi_vehicle_detections, FasterRCNNDetector
+from agent import FasterRCNNDetector
+from .Logger import CarlaDataLogger
 
 class CarlaCommEnv(CarlaBaseEnv):
     def __init__(self, config):
         super().__init__(config) # 初始化父类
-        self.communication = NetworkBase(self._world, config)
-        # self._det = Detection()
         self.obs_vehicles = []      # TODO: dose these vehicles need to be fixed during an episode?
-        self.local_conf_map = {} 
-        self.cur_fused_conf_map = {}
-        self.last_fused_conf_map = {}
-        
-        self.position_seqs = {}
-        self.local_map_seqs = {}
-        self.fused_map_seqs = {}
-        self.interest_map_seqs = []
-        self.adjacency_seqs = []
-        
         self.detector = FasterRCNNDetector
-        
         # vehicle group
         self.v_groups = {}
         
-        
+        root = self._config.dataset_root
+        run_name = "GODE"
+        self._logger = CarlaDataLogger(root_dir=root, run_name=run_name, flush_every=10)
+        self._vehicle_to_group = {}  # 
+        self._time_step = 0
         
     def on_reset(self) -> None:
         """
         Override this method to perform additional reset operations.
         Specifically, you can spawn actors and plan routes here.
         """
+        
+        traffic_lights = self._world.carla_actors(actor_type = 'traffic_light')
+
+        for tl in traffic_lights:
+            tl.set_state(carla.TrafficLightState.Green)
+            tl.set_green_time(9999)
+            tl.set_red_time(0)
+            tl.set_yellow_time(0)
+            
+        self._time_step = 0
+        self.obs_vehicles = []
         # generate vehicles without the need of manual plan
         self._world.spawn_auto_actors(self._config.num_vehicles)
         
@@ -63,28 +66,24 @@ class CarlaCommEnv(CarlaBaseEnv):
                 actor_id = actor.id
                 observer = Observer(self._world, self._config.observation)
                 self._observers.setdefault(actor_id, observer)   
-                self.communication.setvehcomm(actor) # set bandwidth for each vehicle
-                self.position_seqs.setdefault(actor_id, [])
-                self.local_map_seqs.setdefault(actor_id, [])
-                self.fused_map_seqs.setdefault(actor_id, [])
-                self.cur_fused_conf_map[actor_id] = np.zeros((self._config.conf_map.local_bev_config[ 'grid_size'][0], \
-                                        self._config.conf_map.local_bev_config[ 'grid_size'][1]), dtype=np.float32)
-        
-        self.local_conf_map = {} 
-        # self.cur_fused_conf_map = {} # TODO, apply control 中修改
-        self.last_fused_conf_map = {}
-        self.interest_map_seqs = []
-        self.adjacency_seqs = []
+
         self.v_groups = {}
-        
-        self.init_vehicle_groups(distance = 200, count=5)
+        self.init_vehicle_groups(distance = 5000, count=10)
+        self._vehicle_to_group = {}
+        for gid, vids in self.v_groups.items():
+            for vid in vids:
+                self._vehicle_to_group[int(vid)] = int(gid)
+
         self.init_obs_vehicle_path()
         # === 新增修复代码：物理热身 ===
         
         print("Warming up simulation for physics settling...")
         for _ in range(20):  # 运行 20 帧让车辆落地
             self._world._world.tick()  # 确保这里调用的是 world.tick()
-            
+
+        if self._time_step != 0:
+            print(f"Flushing logger at time step {self._time_step}")
+            self._logger.flush()  
         print("Reset complete. Vehicles should be moving now.")
         
     def init_obs_vehicle_path(self, target_num=2):
@@ -130,7 +129,7 @@ class CarlaCommEnv(CarlaBaseEnv):
 
         print(f"Grouped vehicles are now navigating to {target_num} unique destinations.")
     
-    def init_vehicle_groups(self, distance=50, count=5):
+    def init_vehicle_groups(self, distance=5000, count=10):
         """
         根据距离将车辆分组。
         :param distance: 组内车辆间的最大距离阈值（米）
@@ -176,113 +175,166 @@ class CarlaCommEnv(CarlaBaseEnv):
             group_id += 1
 
         print(f"Successfully grouped {len(assigned_vehicles)} vehicles into {len(self.v_groups)} groups.")
-        
-    def apply_control(self, action) -> None:
-        """
-        根据感知得分(action)调节车辆速度。
-        :param action: 字典 {actor_id: score}，score > 0 倾向加速，score < 0 倾向减速
-        """
-        # test
-        action = np.random.uniform(0,1, len(self.obs_vehicles))
-        # 遍历所有受控的观测车辆
-        for i, v_id in enumerate(self.obs_vehicles):
-            actor = self._world.actor_dict.get(v_id)
-            if actor is None:
-                continue
-
-            # 获取当前车辆对应的控制量 (假设 action 是与 obs_vehicles 顺序一致的数组或以 v_id 为键的字典)
-            if isinstance(action, dict):
-                score = action.get(v_id, 0.0)
-            else:
-                score = action[i]
-
-            # 1. 获取当前速度 (单位: m/s)
-            v = actor.get_velocity()
-            current_speed = 3.6 * np.sqrt(v.x**2 + v.y**2 + v.z**2) # 转换为 km/h
-
-            # 2. 计算目标速度 (Target Speed)
-            # 假设：基础速度为 30km/h，根据 score 进行动态调节
-            # 你可以根据实际算法需求修改这个映射公式
-            base_speed = 30.0
-            speed_delta = score * 10.0  # 假设 score 在 [-1, 1] 之间
-            target_speed = max(0.0, base_speed + speed_delta) 
-
-            # 3. 通过 VehicleManager 应用控制
-            # set_desired_speed 实际上是设置 Traffic Manager 的速度限制
-            self._world._vehicle_manager.set_desired_speed(actor, target_speed)
-
-        # 4. 如果需要分享感知数据，可以在此处处理通信逻辑
-        # 例如：根据 score 高低决定是否触发 self.communication 广播
 
     def visualize_topology(self):
-        plt.clf()
-        
-        # 获取当前所有组的所有车辆坐标
-        all_pos = []
-        v_info = [] # 存储 (v_id, group_id, color)
-        colors = ['r', 'g', 'b', 'y', 'm', 'c']
-        
-        for group_id, vehicle_ids in self.v_groups.items():
-            group_color = colors[group_id % len(colors)]
-            for v_id in vehicle_ids:
-                actor = self._world.actor_dict.get(v_id)
-                if actor:
-                    loc = actor.get_location()
-                    all_pos.append([loc.x, loc.y])
-                    v_info.append((v_id, group_id, group_color))
-        
-        if not all_pos: return
-        
-        all_pos = np.array(all_pos)
-        
-        # --- 核心改进：归一化处理 ---
-        # 1. 计算中心点
-        center = np.mean(all_pos, axis=0)
-        rel_pos = all_pos - center
-        
-        # 2. 计算缩放比例 (将最远的车缩放到 1.0 的范围内)
-        max_dist = np.max(np.linalg.norm(rel_pos, axis=1))
-        if max_dist > 0:
-            norm_pos = rel_pos / max_dist  # 所有点现在都在半径为 1 的圆内
-        else:
-            norm_pos = rel_pos
-        
-        # 3. 构建绘图坐标字典
-        pos_dict = {v_info[i][0]: norm_pos[i] for i in range(len(v_info))}
-        
-        # --- 构建 NetworkX 图 ---
-        G = nx.Graph()
-        node_colors = []
-        
-        for v_id, gid, gcolor in v_info:
-            G.add_node(v_id)
-            node_colors.append(gcolor)
-            
-        # 建立边：根据归一化后的相对距离连线
-        # 这里的 threshold 也要相应缩放，或者直接用 KNN
-        for i in range(len(v_info)):
-            for j in range(i + 1, len(v_info)):
-                id1, id2 = v_info[i][0], v_info[j][0]
-                dist = np.linalg.norm(norm_pos[i] - norm_pos[j])
-                
-                # 这里的 0.5 是归一化后的相对距离阈值，可以根据视觉效果调整
-                if dist < 0.8: 
-                    G.add_edge(id1, id2)
+        """
+        - Node color = group id
+        - For each node, connect to its 2 nearest neighbors within the SAME group (k=2)
+        - Save figure to disk every call
+        - Use world (x,y) coordinates but enforce a square view (equal scale) for nicer visuals
+        """
 
-        # --- 绘制 ---
-        # 固定轴范围，防止跳变
-        plt.xlim(-1.2, 1.2)
-        plt.ylim(-1.2, 1.2)
-        
-        nx.draw_networkx_nodes(G, pos_dict, node_color=node_colors, node_size=100)
-        nx.draw_networkx_edges(G, pos_dict, alpha=0.3, style='--')
-        
-        plt.title(f"Normalized Topology - Step {self._time_step}")
-        
-        # 保存逻辑保持不变
-        topo_dir = os.path.join(self._config.display.results_dir, "topo")
-        os.makedirs(topo_dir, exist_ok=True)
-        plt.savefig(os.path.join(topo_dir, f"groups_topo_{self._time_step}.png"), dpi=150)
+        # ---------- 1) collect positions ----------
+        if not hasattr(self, "v_groups") or not self.v_groups:
+            return
+
+        node_pos = {}   # actor_id -> (x,y)
+        node_gid = {}   # actor_id -> group_id
+
+        for gid, vids in self.v_groups.items():
+            for vid in vids:
+                actor = self._world.actor_dict.get(int(vid), None)
+                if actor is None:
+                    continue
+                loc = actor.get_transform().location
+                node_pos[int(vid)] = (float(loc.x), float(loc.y))
+                node_gid[int(vid)] = int(gid)
+
+        if len(node_pos) < 2:
+            return
+
+        # ---------- 2) figure setup (reuse single figure) ----------
+        if not hasattr(self, "_topo_fig") or self._topo_fig is None:
+            self._topo_fig = plt.figure(figsize=(7, 7))
+            self._topo_ax = self._topo_fig.add_subplot(111)
+            plt.ion()
+
+        ax = self._topo_ax
+        ax.clear()
+
+        # ---------- 3) color map by group ----------
+        group_ids = sorted(set(node_gid.values()))
+        cmap = plt.get_cmap("tab20")
+        gid_to_color = {g: cmap(i % 20) for i, g in enumerate(group_ids)}
+
+        # ---------- 4) build edges: kNN (k=2) within each group ----------
+        # We'll create an undirected edge set to avoid drawing duplicates.
+        edges = set()  # store (min(u,v), max(u,v))
+
+        k = 3
+        for gid, vids in self.v_groups.items():
+            vids = [int(v) for v in vids if int(v) in node_pos]
+            if len(vids) < 2:
+                continue
+
+            pts = np.array([node_pos[v] for v in vids], dtype=np.float32)  # (M,2)
+
+            # pairwise distances (M,M)
+            diff = pts[:, None, :] - pts[None, :, :]
+            dist = np.linalg.norm(diff, axis=-1)  # (M,M)
+            np.fill_diagonal(dist, np.inf)
+
+            for i, u in enumerate(vids):
+                # nearest k indices
+                nn_idx = np.argsort(dist[i])[: min(k, len(vids)-1)]
+                for j in nn_idx:
+                    v = vids[int(j)]
+                    a, b = (u, v) if u < v else (v, u)
+                    edges.add((a, b))
+
+        # ---------- 5) draw edges (length reflects relative distance) ----------
+        # Make near edges thicker / less transparent, far edges thinner / more transparent.
+        # We compute distances in world coords.
+        if edges:
+            dlist = []
+            for u, v in edges:
+                pu = np.array(node_pos[u], dtype=np.float32)
+                pv = np.array(node_pos[v], dtype=np.float32)
+                dlist.append(float(np.linalg.norm(pu - pv)))
+            dmin, dmax = (min(dlist), max(dlist)) if dlist else (0.0, 1.0)
+            span = max(dmax - dmin, 1e-6)
+
+            for (u, v) in edges:
+                gid = node_gid.get(u, node_gid.get(v, -1))
+                color = gid_to_color.get(gid, (0.5, 0.5, 0.5))
+
+                pu = np.array(node_pos[u], dtype=np.float32)
+                pv = np.array(node_pos[v], dtype=np.float32)
+                d = float(np.linalg.norm(pu - pv))
+
+                # normalized distance in [0,1]
+                dn = (d - dmin) / span
+                # near => thicker & higher alpha; far => thinner & lower alpha
+                lw = float(np.clip(2.5 - 1.8 * dn, 0.6, 2.5))
+                alpha = float(np.clip(0.65 - 0.45 * dn, 0.12, 0.65))
+
+                ax.plot([pu[0], pv[0]], [pu[1], pv[1]],
+                        linewidth=lw, alpha=alpha, color=color)
+
+        # ---------- 6) draw nodes ----------
+        for gid in group_ids:
+            vids = [vid for vid in node_pos.keys() if node_gid.get(vid) == gid]
+            pts = np.array([node_pos[v] for v in vids], dtype=np.float32)
+
+            ax.scatter(pts[:, 0], pts[:, 1],
+                    s=70, color=gid_to_color[gid],
+                    label=f"group {gid}",
+                    edgecolors="k", linewidths=0.5)
+
+            # optional: label actor id
+            for vid in vids:
+                x, y = node_pos[vid]
+                ax.text(x + 0.5, y + 0.5, str(vid), fontsize=8)
+
+        # ---------- 7) make it square & nice (no normalization, but square view) ----------
+        all_pts = np.array(list(node_pos.values()), dtype=np.float32)
+        xmin, ymin = all_pts.min(axis=0)
+        xmax, ymax = all_pts.max(axis=0)
+
+        cx, cy = (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
+        rx, ry = (xmax - xmin), (ymax - ymin)
+        r = max(rx, ry) * 0.55  # half-range (slightly padded)
+        r = max(r, 5.0)         # avoid too tiny view (meters)
+
+        ax.set_xlim(cx - r, cx + r)
+        ax.set_ylim(cy - r, cy + r)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.2)
+
+        ts = getattr(self, "_time_step", None)
+        ax.set_title(f"Vehicle-group topology" + (f" | t={ts}" if ts is not None else ""))
+        ax.set_xlabel("world x (m)")
+        ax.set_ylabel("world y (m)")
+        ax.legend(loc="best", fontsize=8)
+
+        self._topo_fig.tight_layout()
+        self._topo_fig.canvas.draw_idle()
+        plt.pause(0.001)
+
+        # ---------- 8) save to disk ----------
+        # Prefer CARLA snapshot frame if available, else use timestep
+        frame_id = None
+        try:
+            frame_id = int(self._world.carla_world.get_snapshot().frame)
+        except Exception:
+            frame_id = None
+
+        if frame_id is None:
+            frame_id = int(ts) if ts is not None else 0
+
+        # default save dir: dataset_root/run_name/topology (if you have config), else ./data/topology
+        root = self._config.dataset_root
+        run_name = "GODE"
+        if root is None:
+            save_dir = os.path.join("data", "topology", run_name)
+        else:
+            save_dir = os.path.join(root, run_name, "topology")
+
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"topology_{frame_id:08d}.png")
+        self._topo_fig.savefig(save_path, dpi=180)
+
+
     
     def on_step(self) -> None:
         """
@@ -295,35 +347,20 @@ class CarlaCommEnv(CarlaBaseEnv):
         # run the RL algorithm to decide what to share based on the observation and communication state
         
         for actor_id in self.obs_vehicles:
-            # update cur_fused_conf_map
-            print(f"Time Step {self._time_step} Vehicle {actor_id} pos : {self._world._get_actor_transforms()[actor_id]}")
+            pass
         
-        if self._time_step % 10 == 0:
+        if self._time_step % 5 == 0:
             self.visualize_topology()
         
-    def reward(self) -> Tuple[float, Dict]:
-        """
-        Override this method to define the reward function.
-        """
-        pass
-
-    def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
-        _, obs_info = super().reset()
-            
-        self.communication.reset()
-
-        return self.obs, obs_info
-
-
     def step(self, action):
         self.apply_control(action)
         self._world.step()
         self._time_step += 1
-        env_state = self.get_state()
+        env_state = {} #self.get_state()
         
-        # terminated, terminal_conds = self._is_terminal()
-        terminated = False
-        truncated = False #self._time_step >= self._config.max_episode_steps
+        snapshot = self._world.carla_world.get_snapshot()
+        frame_id = int(snapshot.frame)
+        truncated = self._time_step >= self._config.max_episode_steps
 
         # self.obs, obs_info = self._observer.get_observation(env_state)
         obs_info = {}
@@ -332,8 +369,33 @@ class CarlaCommEnv(CarlaBaseEnv):
             one_obs, one_obs_info = observer.get_observation(self.get_state())    
             self.obs.setdefault(actor_id, one_obs)
             obs_info.setdefault(actor_id, one_obs_info)
+
+        for actor_id in self.obs_vehicles:
+            actor = self._world.actor_dict.get(actor_id)
+            if actor is None:
+                continue
+            transform = actor.get_transform()
+            velocity = actor.get_velocity()
+            yaw = actor.get_transform().rotation.yaw
+
+            group_id = self._vehicle_to_group.get(int(actor_id), -1)
+            one_obs = self.obs.get(actor_id, None)
+            
+            self._logger.log_step(
+                frame=frame_id,
+                timestep=int(self._time_step),
+                actor_id=int(actor_id),
+                group_id=int(group_id),
+                transform=transform,
+                velocity=velocity,
+                yaw=float(yaw),
+                obs=one_obs
+            )
+        
         reward, reward_info = 0, {} # self.reward()
         info = {}
+        # terminated, terminal_conds = self._is_terminal()
+        terminated = truncated
 
         # info = {
         #     **env_state,
@@ -350,264 +412,3 @@ class CarlaCommEnv(CarlaBaseEnv):
         #     self._render(self.obs, info)
         return self.obs, reward, terminated, truncated, info
     
-    def run_detection(self, actor_id: int):
-        """
-        对每辆车运行目标检测，更新感知质量map
-        """
-        time_step = self._time_step
-        state = {}
-    
-        camera_params = g_camera_params
-        ego_params = self._world._get_actor_transforms()[actor_id]
-        ego_params = {
-            "translation": [ego_params.location.x, ego_params.location.y, ego_params.location.z],
-            "rotation": carla_rotation_to_wxyz(ego_params.rotation) # [ego_params.rotation.roll, ego_params.rotation.pitch, ego_params.rotation.yaw],
-        }
-
-        detector = self.detector(device='cuda', conf_threshold=0.2)
-        import cv2
-        # image = cv2.imread(image_path)
-        obs, info = self._observers[actor_id].get_observation(state)
-        image = obs['camera']
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        detections = detector.detect(image)
-        
-        # 处理单个车辆的BEV
-        '''
-        vehicle_data = {
-            'agent_id': agent_id,
-            'image_path':image_rgb,
-            "camera_params":camera_params,
-            'camera_global_position': projector.camera_global_position,
-            'vehicle_global_position': projector.ego_vehicle_params['translation'],
-            'bev_confidence_global': bev_confidence_global,
-            'bev_coverage_global': bev_coverage_global,
-            'bev_confidence_local': bev_confidence_local,
-            'bev_coverage_local': bev_coverage_local,
-            'detections': detections,
-            'ego_params': ego_vehicle_params,
-            'projected_positions': projected_positions,  # 用于后续融合
-            'local_info': local_info
-        }
-        '''
-        vehicle_data, projector = process_single_vehicle_bev(
-            agent_id= actor_id, #vehicle_info['agent_id'],
-            image_rgb=image_rgb,
-            detections=detections,
-            camera_params=camera_params,
-            ego_vehicle_params=ego_params,
-            local_bev_config=self._config.conf_map.local_bev_config,
-            global_bev_config=self._config.conf_map.global_bev_config
-        )
-
-        if True: 
-            fig, axes = plt.subplots(2, 2, figsize=(12, 12))
-            # 原始图像
-            axes[0][0].set_title('Image Detections')
-            axes[0][0].imshow(plot_detections(image_rgb, detections))
-            axes[0][0].set_xlim(0, 1600)
-            axes[0][0].set_ylim(900, 0)
-            
-            # BEV置信度地图
-            bev_confidence_global, bev_coverage_global, projected_positions,\
-                    bev_confidence_local, bev_coverage_local, local_info = projector.project_detections_to_bev(
-                        detections,
-                        method='depth_estimation',
-                        local_bev_config=self._config.conf_map.local_bev_config,
-                        local_center='vehicle'  # 或 'camera'
-                )
-            im1 = axes[0][1].imshow(bev_confidence_global, cmap='hot', origin='lower', 
-                        extent=[self._config.conf_map.global_bev_config['area_extents'][0][0], 
-                                self._config.conf_map.global_bev_config['area_extents'][0][1],
-                                self._config.conf_map.global_bev_config['area_extents'][1][0], 
-                                self._config.conf_map.global_bev_config['area_extents'][1][1]])
-            axes[0][1].set_title('Global BEV Confidence Map')
-            axes[0][1].set_xlabel('X (meters)')
-            axes[0][1].set_ylabel('Y (meters)')
-            plt.colorbar(im1, ax=axes[0][1])
-            # 标记相机位置
-            # cam_x, cam_y = camera_params['translation'][0], camera_params['translation'][1] # 车辆坐标系中位置
-            cam_x, cam_y = projector.camera_global_position[0], projector.camera_global_position[1]  # 全局坐标系中位置
-            axes[0][1].plot(cam_x, cam_y, 'b*', markersize=10, label='Camera')
-            axes[0][1].legend()
-
-            # Local BEV覆盖地图
-            im2 = axes[1][0].imshow(bev_confidence_local, cmap='hot', origin='lower', 
-                        extent=[self._config.conf_map.local_bev_config['area_extents'][0][0], 
-                                self._config.conf_map.local_bev_config['area_extents'][0][1],
-                                self._config.conf_map.local_bev_config['area_extents'][1][0], 
-                                self._config.conf_map.local_bev_config['area_extents'][1][1]])
-            axes[1][0].set_title('Local BEV Confidence Map')
-            axes[1][0].set_xlabel('X (meters)')
-            axes[1][0].set_ylabel('Y (meters)')
-            plt.colorbar(im2, ax=axes[1][0])
-
-            # 标记相机位置
-            cam_x, cam_y = camera_params['translation'][0], camera_params['translation'][1] # 车辆坐标系中位置
-            axes[1][0].plot(cam_x, cam_y, 'b*', markersize=10, label='Camera')
-            axes[1][0].legend()
-
-            # BEV置信度地图
-            print(f"cur_fused_conf_map shape: {self.cur_fused_conf_map[actor_id].shape}")
-            im1 = axes[1][1].imshow(self.cur_fused_conf_map[actor_id], cmap='hot', origin='lower', 
-                        extent=[self._config.conf_map.local_bev_config['area_extents'][0][0], 
-                                self._config.conf_map.local_bev_config['area_extents'][0][1],
-                                self._config.conf_map.local_bev_config['area_extents'][1][0], 
-                                self._config.conf_map.local_bev_config['area_extents'][1][1]])
-            axes[1][1].set_title('Global BEV Confidence Map')
-            axes[1][1].set_xlabel('X (meters)')
-            axes[1][1].set_ylabel('Y (meters)')
-            plt.colorbar(im1, ax=axes[1][1])
-            # 标记相机位置
-            cam_x, cam_y = camera_params['translation'][0], camera_params['translation'][1] # 车辆坐标系中位置
-            # cam_x, cam_y = projector.camera_global_position[0], projector.camera_global_position[1]  # 全局坐标系中位置
-            axes[1][1].plot(cam_x, cam_y, 'b*', markersize=10, label='Camera')
-            axes[1][1].legend()
-
-            plt.tight_layout()
-            figdir = os.path.join(self._config.display.results_dir, "det", f"vehicle_{actor_id}")
-            os.makedirs(figdir, exist_ok=True)
-            figfile = os.path.join(figdir, f"detection_bev_{time_step:03d}.png")
-            plt.savefig(figfile, dpi=150)
-            # # plt.show()
-
-        return vehicle_data, projector 
-    
-    def member_state(self, actor_id: int):       
-        obs = {'vid': actor_id, 'time_step': self._time_step}
-        time_step = self._time_step
-        
-        vehicle_info, projector = self.run_detection(actor_id)  # 使用点云数量检测
-
-        self.local_conf_map.setdefault(actor_id, vehicle_info['bev_confidence_local'])
-        self.position_seqs.setdefault(actor_id, []).append(vehicle_info['vehicle_global_position'][:2])
-        self.local_map_seqs.setdefault(actor_id, []).append(vehicle_info['bev_confidence_local'].copy())
-        if len(self.fused_map_seqs[actor_id]) == 0:
-            self.last_fused_conf_map[actor_id] = self.local_conf_map[actor_id]
-            self.fused_map_seqs[actor_id].append(self.last_fused_conf_map[actor_id].copy())
-        
-        obs.update({'position': vehicle_info['vehicle_global_position'][:2],
-                      'local_maps': self.local_conf_map[actor_id],
-                      'fused_maps': self.last_fused_conf_map[actor_id],
-                      'cur_fused_maps': self.cur_fused_conf_map[actor_id],})
-
-        return obs, vehicle_info, projector
-            
-    def wrapper_obs(self):
-        # Return the state of the cluster
-        vehicles_data_list = []
-        time_step = self._time_step
-
-        cluster_state = {}
-        local_maps = []
-        fused_maps = []
-        cur_fused_maps = []
-        positions = []
-        adjacency_matrix = np.zeros((len(self.obs_vehicles), len(self.obs_vehicles)), dtype=np.float32)
-
-        for actor_id in self.obs_vehicles:
-            print(f"\n处理车辆 {actor_id} 的观测数据...")
-            obs, vehicle_data, projector = self.member_state(actor_id) 
-            vehicles_data_list.append(vehicle_data)
-            local_maps.append(obs['local_maps'])
-            fused_maps.append(obs['fused_maps'])
-            cur_fused_maps.append(obs['cur_fused_maps'])
-            positions.append(obs['position'])
-
-            
-        fused_bev_confidence, area_vehicle_counts = fuse_multi_vehicle_bev(
-            vehicles_data=vehicles_data_list,
-            global_bev_config=self._config.conf_map.global_bev_config,
-            local_bev_config=self._config.conf_map.local_bev_config,
-            time_step=time_step,
-            fusion_method='max',
-            visualize=True
-        )
-        interest_maps = area_vehicle_counts
-        self.interest_map_seqs.append(interest_maps)
-        
-        # 融合检测结果
-        fused_detections = fuse_multi_vehicle_detections(
-            vehicles_data=vehicles_data_list,
-            iou_threshold=0.5,
-            score_threshold=0.3
-        )
-        
-        # for actor_id, actor in self._world.actor_dict.items():
-        #     ego_vehicle_world_pos = vehicles_data_list[actor_id]['vehicle_global_position']
-        #     save_path = os.path.join(member.detVis.output_dir, f"time_{time_step:03d}_vehicle_{vid}_fused_detections.png")
-            
-        #     member.detVis.visualize_fusion_comparison(
-        #         vehicle_id = "vehicle_" + str(vid),
-        #         ego_center_world = ego_vehicle_world_pos,
-        #         own_projected_positions=vehicles_data_list[vid-1]['projected_positions'],
-        #         others_projected_positions=fused_detections,
-        #         local_bev_config = self.dataset.local_bev_config,
-        #         save_path = save_path,
-        #     )
-
-        # 根据车辆之间距离，构建邻接矩阵
-        for i, member_i in enumerate(self.obs_vehicles):
-            pos_i = np.array(positions[i])
-            for j, member_j in enumerate(self.obs_vehicles):
-                pos_j = np.array(positions[j])
-                distance = np.linalg.norm(pos_i - pos_j)
-                adjacency_matrix[i, j] = 1/(1 + distance)  # 距离越近，权重越大
-        self.adjacency_seqs.append(adjacency_matrix)
-
-        states = {
-            'local_maps': np.array(local_maps),
-            'fused_maps': np.array(fused_maps),
-            'cur_fused_maps': np.array(cur_fused_maps),
-            'positions': np.array(positions),
-            'fused_bev_confidence': np.array(fused_bev_confidence),
-            'interest_maps': np.array(interest_maps),
-            'vehicles_data_list': vehicles_data_list
-        }
-
-        # verify_coordinate_mapping(self.vehicles_data_list)
-
-        return states        
-    
-    def wrapper_state(self, obs):
-        """
-        返回:
-        local_maps: [N_v, T, H, W] (float32)
-        fused_maps: [N_v, T, H, W] (float32)
-        adjacency_matrix: [T, N_v, N_v] (float32)
-        positions: [N_v, T, 2]   (float32)
-        interest_maps: [T, H_g, W_g]  (float32)
-        """
-        T = 1
-        N_v = len(self.obs_vehicles)
-        local_maps = []
-        fused_maps = []
-        positions = []
-        interest_maps = []
-        for vid, car in self.cars.items():
-            local_map_seq = car.local_map_seqs[-T:]  # 最近T个时间步
-            fused_map_seq = car.fused_map_seqs[-T:]  # 最近T个时间步
-            position_seq = car.position_seqs[-T:]    # 最近T个时间步
-            local_maps.append(local_map_seq)
-            fused_maps.append(fused_map_seq)
-            positions.append(position_seq)
-        interest_maps = self.clusters[0].interest_map_seqs[-T:]  # 最近T个时间步
-        local_maps = np.array(local_maps)          # [N_v, T, H_l, W_l]
-        fused_maps = np.array(fused_maps)          # [N_v, T, H, W]
-        positions = np.array(positions)            # [N_v, T, 2]
-        interest_maps = np.array(interest_maps) # [T, H_g, W_g]
-        adjs = self.clusters[0].adjacency_seqs[-T:]  # 最近T个时间步
-
-        states = {
-            'local_maps': local_maps,
-            'fused_maps': fused_maps,
-            'positions': positions,
-            'interest_maps': interest_maps,
-            'adjs': adjs
-        }
-
-        LOG.info(f"wrapper_state: local_maps shape: {local_maps.shape}, fused_maps shape: {fused_maps.shape}, \
-                 positions shape: {positions.shape}, interest_maps shape: {interest_maps.shape}, adjs length: {len(adjs)}")
-
-
-        return states

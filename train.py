@@ -43,21 +43,19 @@ def main(argv=None):
     time_steps = 0
     # agent = RandomAgent(env.obs_space, env.act_space, time_steps, config.V2X_test)
     # replay_buffer = ReplayBuffer(config.model.replay_buffer_size)
-    
-    while time_steps < 100000:
+    done = False
+    while not done:
         action = env.action_space.sample()
         # obs = env.obs
         # action = agent.policy(env.obs, state=None, mode="train")
         next_obs, reward, done, _, info = env.step(action)
-        time_steps += 1
-        state = env.unwrapped.wrapper_obs()
+        
         # print(f"[Train] Step: {time_steps}, Reward: {reward}, Done: {done}, state: {state}")
         if done:
             env.reset()
     print("[Train] Environment test run completed.")
     
-    
-    test_config = config.V2X_test
+
     step = 0
     # agent = BaseAgent(env.obs_space, env.act_space, step, test_config)
     # train(agent, env, test_config)

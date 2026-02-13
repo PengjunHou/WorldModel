@@ -1,5 +1,6 @@
 env:
   eval: False
+  dataset_root: "data"
 
   world:
     carla_port: 2000
@@ -23,7 +24,7 @@ env:
         image_size_x: 1600
         image_size_y: 900
         fov: 70
-        sensor_tick: 0.1
+        sensor_tick: 0.2
 
     # LiDAR sensor
     lidar:
